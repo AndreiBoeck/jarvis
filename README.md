@@ -236,7 +236,8 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
-| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface` |
+| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone` |
+| `JARVIS_DEVICES_FILE` | `~/.jarvis/devices.json` | Where paired phones are kept (token hashes only) |
 | `JARVIS_ALLOWED_ORIGINS` | local dev | Extra WebSocket origins to accept |
 | `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
 | `JARVIS_WORKSPACE` | `~/.jarvis/workspace` | The agent's working directory; file tools are confined to it and the temp directory |
@@ -304,6 +305,36 @@ inside the same folders; the shell can reach anything your user account can.
 > means something rather different with writes enabled.
 
 ---
+
+## Your phone
+
+A phone running the JARVIS app reaches this bridge from anywhere, and JARVIS —
+asked on the PC or on the phone — can work the phone: open apps, navigate, set
+alarms, read notifications and the screen, tap and type, call and text.
+
+1. Install [Tailscale](https://tailscale.com) on the PC and the phone, signed in
+   to the same account. It is a private network between your own devices; the
+   bridge is never put on the internet.
+2. Make the bridge reachable on that network only (it keeps listening on
+   `127.0.0.1`; Tailscale forwards to it, with HTTPS):
+
+   ```bash
+   tailscale serve --bg 8787
+   ```
+
+3. Pair the phone. This prints a token, once, to enter in the app:
+
+   ```bash
+   npm run pair -- "Pixel"
+   ```
+
+`npm run pair -- --list` shows paired phones and `npm run pair -- --revoke "Pixel"`
+unpairs one immediately. Only a hash of each token is stored.
+
+The phone holds one quiet connection open (`/device`), which starts no agent of
+its own. Reading the phone runs freely; acting on it needs write access like
+every other action, and calls, texts and replies are confirmed on the phone
+itself.
 
 ## Troubleshooting
 

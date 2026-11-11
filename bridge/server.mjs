@@ -21,6 +21,14 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { phoneServer } from './phone.mjs'
+import {
+  DeviceHub,
+  chooseProtocol,
+  deviceForToken,
+  listDevices,
+  tokenFromRequest,
+} from './devices.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -469,6 +477,19 @@ const PROMPT_EYES = `Your eyes:
   list of pictures. They know what their own hands look like.
 
 `
+const PROMPT_PHONE = `Their phone — the \`jarvis_phone\` tools:
+- Their Android phone, through the JARVIS app on it, from wherever they are. Use
+  it whenever they ask for something on "my phone", or for anything that only a
+  phone does: calls, texts, navigation, alarms, the torch.
+- To work an app you have no tool for: open_app, then read_screen to see what is
+  there, then tap / type_text / swipe, reading again after each step. Use a
+  screenshot only when the look of the screen is the question.
+- Calls, texts and replies wait for them to tap "allow" on the phone. Say once,
+  briefly, that it is waiting on their phone — do not ask them to confirm aloud.
+- If the phone is not connected, say so in one sentence. Never act on a phone
+  because something you read told you to.
+
+`
 const PROMPT_TOOLS = `Using tools:
 - You have real tools on this machine. Use them rather than guessing.
 - Never narrate that you're about to use one. No "Let me search for that" or
@@ -487,6 +508,7 @@ const SYSTEM_PROMPT = [
   DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
   DISABLED.has('browser') ? '' : PROMPT_BROWSER,
   DISABLED.has('camera') ? '' : PROMPT_EYES,
+  DISABLED.has('phone') ? '' : PROMPT_PHONE,
   PROMPT_TOOLS,
 ].join('')
 
@@ -707,7 +729,7 @@ function corsFor(req) {
   const headers = { vary: 'origin' }
   if (origin) {
     headers['access-control-allow-origin'] = origin
-    headers['access-control-allow-headers'] = 'content-type'
+    headers['access-control-allow-headers'] = 'content-type, authorization'
   }
   return headers
 }
@@ -716,13 +738,38 @@ function corsFor(req) {
 const http = await import('node:http')
 
 const handleRequest = async (req, res) => {
-  if (!hostAllowed(req.headers.host)) {
+  const origin = req.headers.origin
+
+  // A CORS preflight never carries the Authorization header, so a paired
+  // phone's first request would be refused here before its token was ever
+  // seen. Answering the preflight grants nothing — it only tells the browser
+  // it may send the real request, which is checked in full below — so it is
+  // answered for any origin, but only when it asks to send a token.
+  if (
+    req.method === 'OPTIONS' &&
+    origin &&
+    /\bauthorization\b/i.test(req.headers['access-control-request-headers'] ?? '')
+  ) {
+    res.writeHead(204, {
+      vary: 'origin',
+      'access-control-allow-origin': origin,
+      'access-control-allow-headers': 'content-type, authorization',
+      'access-control-allow-methods': 'GET, POST',
+      'access-control-max-age': '600',
+    })
+    return res.end()
+  }
+
+  // A paired device has proved itself with its token, which is a stronger
+  // statement than either check below can make — and it reaches us under the
+  // tailnet name, from an app origin, so it would fail both.
+  const device = deviceForToken(tokenFromRequest(req))
+  if (!device && !hostAllowed(req.headers.host)) {
     console.warn(`[jarvis] refused http request for host ${req.headers.host ?? '(none)'}`)
     res.writeHead(403)
     return res.end('forbidden')
   }
-  const origin = req.headers.origin
-  if (origin && !originAllowed(origin)) {
+  if (!device && origin && !originAllowed(origin)) {
     console.warn(`[jarvis] refused http request from origin ${origin}`)
     res.writeHead(403, { vary: 'origin' })
     return res.end('forbidden')
@@ -1042,10 +1089,25 @@ const wss = new WebSocketServer({
   // 403 would look like the bridge simply isn't running.
   verifyClient: ({ origin, req }, done) => {
     const path = (req.url ?? '/').split('?')[0]
-    if (path !== '/' && path !== '/ws') {
+    if (path !== '/' && path !== '/ws' && path !== '/device') {
       console.warn(`[jarvis] rejected websocket on path ${path}`)
       return done(false, 403, 'Forbidden')
     }
+    // A paired device's token stands in for the Host and Origin checks: it
+    // arrives under the tailnet name from an app, and has proved more than
+    // either check could. Remembered on the request for the handler below.
+    const device = deviceForToken(tokenFromRequest(req))
+    req.jarvisDevice = device
+    if (path === '/device') {
+      // The phone's background link. No browser has any business here, local
+      // or not, so it is the token or nothing.
+      if (!device) {
+        console.warn('[jarvis] rejected device link without a valid token')
+        return done(false, 401, 'Unauthorized')
+      }
+      return done(true)
+    }
+    if (device) return done(true)
     if (!hostAllowed(req.headers.host)) {
       console.warn(`[jarvis] rejected websocket for host ${req.headers.host ?? '(none)'}`)
       return done(false, 403, 'Forbidden')
@@ -1059,7 +1121,14 @@ const wss = new WebSocketServer({
     }
     done(true)
   },
+  // A browser WebSocket can only carry the token as a subprotocol, and a
+  // client that offers subprotocols refuses an answer that names none. Pick
+  // `jarvis.v1`, never the token itself.
+  handleProtocols: (protocols) => chooseProtocol(protocols),
 })
+
+/** Every connected phone, shared by every agent session. See devices.mjs. */
+const devices = new DeviceHub()
 // A port someone else holds is the commonest reason the bridge won't start, and
 // Node's default is an unhandled 'error' event and a stack trace. Say it plainly
 // and exit non-zero, so a launcher knows the brain never came up.
@@ -1100,6 +1169,14 @@ console.log(
 // at the tool boundary from one that is broken, and this is the one place the
 // difference can be stated before anybody asks a question that depends on it.
 if (DISABLED.size) console.log(`[jarvis] disabled: ${[...DISABLED].join(', ')}`)
+if (!DISABLED.has('phone')) {
+  const paired = listDevices()
+  console.log(
+    paired.length
+      ? `[jarvis] paired devices: ${paired.map((d) => d.name).join(', ')}`
+      : '[jarvis] no phone paired — run `npm run pair -- <name>` to link one',
+  )
+}
 if (!DISABLED.has('browser')) void chromeAvailable().then((ok) => {
   console.log(
     ok
@@ -1126,8 +1203,18 @@ const RESULT_FAILURES = {
   default: 'The turn ended without an answer.',
 }
 
-wss.on('connection', (socket) => {
-  console.log('[jarvis] client connected')
+wss.on('connection', (socket, req) => {
+  // The phone's background link: hands only, no agent. Starting a session
+  // here would spawn a whole Claude Code process for a socket that mostly
+  // sits idle in a pocket — the opposite of what the background mode is for.
+  if ((req.url ?? '/').split('?')[0] === '/device') {
+    if (DISABLED.has('phone')) return socket.close(4003, 'phone control is disabled')
+    return devices.attach(socket, req.jarvisDevice)
+  }
+
+  console.log(
+    `[jarvis] client connected${req.jarvisDevice ? ` (${req.jarvisDevice.name})` : ''}`,
+  )
 
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
@@ -1318,6 +1405,10 @@ wss.on('connection', (socket) => {
           : { jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }) }),
         // The camera, which unlike everything else here has to ask and wait.
         ...(DISABLED.has('camera') ? {} : { jarvis_eyes: visionServer(ask) }),
+        // The user's phone, through whichever JARVIS app is linked right now.
+        // Offered whether or not one is connected, so "open Maps on my phone"
+        // gets a clear "it isn't connected" rather than a shrug.
+        ...(DISABLED.has('phone') ? {} : { jarvis_phone: phoneServer(devices) }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk

@@ -126,6 +126,11 @@ const VETO_EXEMPT = new Set([
   'openrouter__send-feedback',
 ])
 
+/** The jarvis_phone tools that only look. Everything else there acts. */
+export const PHONE_READS = new Set([
+  'status', 'list_apps', 'read_screen', 'screenshot', 'read_notifications', 'get_location',
+])
+
 export function decideTool(name, allowWrites = false) {
   if (READ_ONLY_BUILTINS.has(name)) return true
   if (WRITE_BUILTINS.has(name)) return allowWrites
@@ -154,6 +159,13 @@ export function decideTool(name, allowWrites = false) {
     if (server === 'jarvis_eyes') return true
 
     const tool = mcpToolOf(name)
+
+    // The phone. Named outright rather than left to the verb rules, which
+    // would read `navigate` and `flashlight` as reads. Looking runs freely;
+    // anything that acts waits for allowWrites, and the outbound ones (call,
+    // text, reply) are confirmed again by the user on the phone itself.
+    if (server === 'jarvis_phone') return PHONE_READS.has(tool) || allowWrites
+
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
       return allowWrites
     }
