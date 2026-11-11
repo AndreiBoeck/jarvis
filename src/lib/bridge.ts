@@ -1,6 +1,6 @@
 import type { AskHandlers } from './anthropic'
 import type { Blade, Panel } from '../store'
-import { BRIDGE_WS_URL } from '../config'
+import { BRIDGE_WS_URL, IS_APP, bridgeProtocols, setMediaKey } from '../config'
 
 /**
  * Client for the local bridge (see bridge/server.mjs).
@@ -28,6 +28,8 @@ type Frame = {
   blade?: Blade
   op?: string
   args?: unknown
+  /** On 'ready', for a paired phone: the key for loading media by URL. */
+  mediaKey?: string
   id?: string
   ask?: string
   reason?: string
@@ -169,6 +171,8 @@ function dispatch(ws: WebSocket) {
     }
 
     if (msg.type === 'ready') {
+      // A paired phone is handed a key for loading images and pages by URL.
+      setMediaKey(msg.mediaKey)
       // The bridge announces immediately on connect from Claude Code's config,
       // then again with live status once the agent initialises. Keep listening
       // so the later, more accurate list wins.
@@ -218,7 +222,7 @@ function connect(): Promise<WebSocket> {
   firstReady = deferred()
 
   connecting = new Promise<WebSocket>((resolve, reject) => {
-    const ws = new WebSocket(BRIDGE_WS_URL)
+    const ws = new WebSocket(BRIDGE_WS_URL, bridgeProtocols())
     let settled = false
 
     /**
@@ -265,6 +269,10 @@ function connect(): Promise<WebSocket> {
        */
       settle(
         new Error(
+          IS_APP
+            ? 'Cannot reach JARVIS at home. Check that Tailscale is on, the PC is ' +
+              'awake with the bridge running, and this phone is still paired.'
+            :
           `Cannot reach the bridge at ${BRIDGE_WS_URL}. Either it is not ` +
             'running (start it with `npm start`), or this page is on a port it ' +
             `refuses — it accepts localhost:5173-5199 and 4173-4199, and this ` +

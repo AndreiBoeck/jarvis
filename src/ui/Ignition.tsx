@@ -1,4 +1,5 @@
 import { useStore } from '../store'
+import { IS_APP } from '../config'
 
 /**
  * The start gate.
@@ -48,7 +49,7 @@ export function Ignition({ onStart }: { onStart: () => void }) {
       <span className="ignition-ring" />
       <span className="ignition-label">
         <span className="ignition-word">INITIALISE</span>
-        <span className="ignition-sub">click, or clap, to power up</span>
+        <span className="ignition-sub">{IS_APP ? 'tap to power up' : 'click, or clap, to power up'}</span>
       </span>
     </button>
   )

@@ -13,7 +13,8 @@ import * as hands from './lib/hands'
 import { listenForClap } from './lib/clap'
 import * as camera from './lib/camera'
 import * as kokoro from './lib/kokoro'
-import { TTS_ENGINE } from './config'
+import { IS_APP, TTS_ENGINE } from './config'
+import { TalkButton } from './ui/Mobile'
 import { forTool, attention } from './lib/fillers'
 import {
   ask,
@@ -560,6 +561,31 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
+  // -- talk: Space on the desktop, the talk button in the app ---------------
+
+  /**
+   * Start a turn without the wake word — or, while he is busy, cut in. The
+   * desktop binds it to Space; the app, which has no wake word at all, puts
+   * it under a button.
+   */
+  const talk = () => {
+    const phase = store.getState().phase
+    if (phase === 'offline') {
+      void powerOn()
+    } else if (phase === 'boot') {
+      /* ignore — the boot sequence owns the phase until it finishes */
+    } else if (
+      phase === 'thinking' ||
+      phase === 'tooling' ||
+      phase === 'speaking'
+    ) {
+      onSpeechStart()
+      listen(AWAIT_SPEECH_MS)
+    } else {
+      onWake('')
+    }
+  }
+
   // -- level pump + keys ----------------------------------------------------
 
   useEffect(() => {
@@ -665,22 +691,7 @@ export default function App() {
       // a missed wake word doesn't cost a take.
       if (e.code !== 'Space' || e.repeat) return
       e.preventDefault()
-
-      const phase = store.getState().phase
-      if (phase === 'offline') {
-        void powerOn()
-      } else if (phase === 'boot') {
-        /* ignore — the boot sequence owns the phase until it finishes */
-      } else if (
-        phase === 'thinking' ||
-        phase === 'tooling' ||
-        phase === 'speaking'
-      ) {
-        onSpeechStart()
-        listen(AWAIT_SPEECH_MS)
-      } else {
-        onWake('')
-      }
+      talk()
     }
     window.addEventListener('keydown', onKey)
 
@@ -704,6 +715,7 @@ export default function App() {
       <Boot />
       <Diagnostics />
       <Ignition onStart={() => void powerOn()} />
+      {IS_APP && <TalkButton onTalk={talk} />}
     </>
   )
 }

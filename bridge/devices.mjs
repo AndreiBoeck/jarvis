@@ -147,6 +147,48 @@ export function chooseProtocol(protocols) {
 }
 
 // ---------------------------------------------------------------------------
+// Media keys
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys that open the bridge's media routes for a paired phone.
+ *
+ * An <img>, <video> or <iframe> cannot send a header, and the panels load
+ * screenshots, proxied images and reader pages exactly that way. Putting the
+ * pairing token in those URLs would scatter the one credential that unlocks
+ * everything across every image request. A media key is narrower on every
+ * axis: it opens only the GET media routes (never the agent, speech or the
+ * device link), it is minted per connection, and it dies with that connection
+ * — or with the device, if it is unpaired first.
+ *
+ * In memory only: a restart forgets them all, and the phone simply receives a
+ * new one when it reconnects.
+ */
+const mediaKeys = new Map()
+
+export function issueMediaKey(device) {
+  const key = randomBytes(24).toString('base64url')
+  mediaKeys.set(key, device.id)
+  return key
+}
+
+export function dropMediaKey(key) {
+  mediaKeys.delete(key)
+}
+
+/** The routes a media key may open. */
+export const MEDIA_ROUTES = ['/file', '/img', '/media', '/page']
+
+/** The device behind a media key, if the key is live and the device still paired. */
+export function deviceForMediaKey(key, file = devicesFile()) {
+  if (typeof key !== 'string' || !key) return null
+  const id = mediaKeys.get(key)
+  if (!id) return null
+  const device = load(file).find((d) => d.id === id)
+  return device ? { id: device.id, name: device.name } : null
+}
+
+// ---------------------------------------------------------------------------
 // The live link
 // ---------------------------------------------------------------------------
 

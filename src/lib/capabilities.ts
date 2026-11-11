@@ -1,4 +1,4 @@
-import { BACKEND, BRIDGE_HTTP_URL, env } from '../config'
+import { BACKEND, BRIDGE_HTTP_URL, bridgeHeaders, env } from '../config'
 
 /**
  * What speech engines are actually available, decided once at boot.
@@ -53,6 +53,7 @@ export async function probeCapabilities(): Promise<Capabilities> {
   }
   try {
     const res = await fetch(`${BRIDGE_HTTP_URL}/health`, {
+      headers: bridgeHeaders(),
       signal: AbortSignal.timeout(3000),
     })
     if (res.ok) {

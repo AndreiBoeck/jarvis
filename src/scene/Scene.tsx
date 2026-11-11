@@ -10,6 +10,7 @@ import {
 import { BlendFunction } from 'postprocessing'
 import * as THREE from 'three'
 import { Core } from './Core'
+import { IS_APP } from '../config'
 import { Particles } from './Particles'
 import { Orbits } from './Orbits'
 import { useStore, phaseColor, accentFor, type Phase } from '../store'
@@ -198,7 +199,9 @@ export function Scene() {
       className="scene"
       camera={{ position: [0, 0, 6.2], fov: 45 }}
       gl={{ antialias: true, alpha: true }}
-      dpr={[1, 2]}
+      // Capped lower on a phone, whose screens are dense enough that 2x is
+      // invisible and expensive.
+      dpr={IS_APP ? [1, 1.5] : [1, 2]}
     >
       <Rig />
       {/*

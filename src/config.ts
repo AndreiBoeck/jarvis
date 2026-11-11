@@ -71,8 +71,83 @@ export const BACKEND: 'bridge' | 'direct' = choice(
  * `wss://` maps to `https://` on its own, which is why this is a prefix swap
  * rather than a hardcoded scheme.
  */
-export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://localhost:8787'
+/**
+ * Running inside the Android app (Capacitor) rather than a desktop browser.
+ *
+ * Capacitor injects `window.Capacitor` before any of our code runs, so this is
+ * settled at import time. The app differs in three ways that matter here: it
+ * reaches the bridge through Tailscale with a pairing token, it has no
+ * wake word (a tap starts a turn), and it draws a lighter scene.
+ */
+export const IS_APP: boolean = Boolean(
+  (globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor
+    ?.isNativePlatform?.(),
+)
+
+/** A phone's pairing with the bridge, saved on the phone by the pairing screen. */
+export type BridgeLink = { url: string; token: string }
+
+const LINK_KEY = 'jarvis.link'
+
+export function readLink(): BridgeLink | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LINK_KEY) ?? 'null')
+    if (typeof raw?.url === 'string' && typeof raw?.token === 'string' && raw.url && raw.token) {
+      return { url: raw.url, token: raw.token }
+    }
+  } catch {
+    /* storage unavailable or corrupt: unpaired */
+  }
+  return null
+}
+
+/** Saved, then the page reloads — the bridge address is fixed at import time. */
+export function saveLink(link: BridgeLink | null): void {
+  if (link) localStorage.setItem(LINK_KEY, JSON.stringify(link))
+  else localStorage.removeItem(LINK_KEY)
+}
+
+const LINK = IS_APP ? readLink() : null
+
+export const BRIDGE_WS_URL =
+  LINK?.url ?? str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://localhost:8787'
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
+
+/** The address baked in at build time, offered as the default when pairing. */
+export const DEFAULT_BRIDGE_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? ''
+
+/** The pairing token, or '' on the desktop, where the bridge trusts localhost. */
+export const BRIDGE_TOKEN = LINK?.token ?? ''
+
+/** Headers for fetch() calls to the bridge. */
+export function bridgeHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return BRIDGE_TOKEN ? { ...extra, authorization: `Bearer ${BRIDGE_TOKEN}` } : extra
+}
+
+/**
+ * WebSocket subprotocols. A browser socket cannot set headers, so the token
+ * travels as a subprotocol; the bridge answers `jarvis.v1` and never echoes it.
+ */
+export function bridgeProtocols(): string[] | undefined {
+  return BRIDGE_TOKEN ? ['jarvis.v1', `jarvis.token.${BRIDGE_TOKEN}`] : undefined
+}
+
+/**
+ * The media key the bridge hands a paired phone on connect. Images, video and
+ * framed pages load by URL and cannot carry the token; this narrower key,
+ * valid only for those routes and only while the socket lives, rides along in
+ * the query string instead.
+ */
+let mediaKey = ''
+export function setMediaKey(key: unknown): void {
+  if (typeof key === 'string') mediaKey = key
+}
+
+/** A bridge media URL, with the media key appended when there is one. */
+export function withMediaKey(url: string): string {
+  if (!mediaKey || !url.startsWith(`${BRIDGE_HTTP_URL}/`)) return url
+  return `${url}${url.includes('?') ? '&' : '?'}k=${encodeURIComponent(mediaKey)}`
+}
 
 /**
  * Speech output engine.

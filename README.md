@@ -328,13 +328,34 @@ alarms, read notifications and the screen, tap and type, call and text.
    npm run pair -- "Pixel"
    ```
 
+4. Build the Android app and install it (needs Android Studio, for its JDK and
+   SDK). `--install` puts it on a phone connected by USB; otherwise copy the APK
+   it prints to the phone:
+
+   ```bash
+   npm run app -- --install
+   ```
+
+5. Open the app, paste the token, tap **Conectar**. Then open the gear and grant
+   what you want JARVIS to have: permissions, screen control (Accessibility),
+   notifications, unrestricted battery. On Android 13+, screen control and
+   notifications stay greyed out for an app installed outside the Play Store
+   until you open the app's info page, tap ⋮ and choose *Allow restricted
+   settings*.
+
 `npm run pair -- --list` shows paired phones and `npm run pair -- --revoke "Pixel"`
 unpairs one immediately. Only a hash of each token is stored.
 
-The phone holds one quiet connection open (`/device`), which starts no agent of
-its own. Reading the phone runs freely; acting on it needs write access like
-every other action, and calls, texts and replies are confirmed on the phone
-itself.
+The app is the same interface as the desktop, with a talk button in place of
+the wake word — nothing listens while it is closed. What it adds is a quiet
+background connection (`/device`) that starts no agent of its own, so JARVIS on
+the PC can reach the phone at any time; it can be switched off from the gear.
+
+Reading the phone runs freely; acting on it needs write access like every other
+action. Calls, texts and replies are also confirmed on the phone itself, and
+banking, wallet, payment and authenticator apps are never read or touched: their
+notifications are left out, and screen reading, taps and typing refuse while one
+is in front.
 
 ## Troubleshooting
 

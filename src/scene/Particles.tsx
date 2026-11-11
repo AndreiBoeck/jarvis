@@ -2,13 +2,16 @@ import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { Drive } from './Scene'
+import { IS_APP } from '../config'
 
 /**
  * A shell of points around the core. Each one drifts on its own orbit and gets
  * pushed outward by loudness, so the whole cloud expands when JARVIS speaks.
  */
 
-const COUNT = 4000
+// A phone GPU draws the same cloud with fewer points: it reads the same and
+// costs a fraction of the battery.
+const COUNT = IS_APP ? 1500 : 4000
 
 const vertex = /* glsl */ `
   uniform float uTime;

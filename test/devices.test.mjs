@@ -20,7 +20,10 @@ import {
   PROTOCOL,
   chooseProtocol,
   createDevice,
+  deviceForMediaKey,
   deviceForToken,
+  dropMediaKey,
+  issueMediaKey,
   listDevices,
   revokeDevice,
   tokenFromRequest,
@@ -68,6 +71,19 @@ test('the handshake answers jarvis.v1 and never echoes the token', () => {
   assert.equal(chooseProtocol(new Set(['jarvis.token.jv_x', 'jarvis.v1'])), PROTOCOL)
   assert.equal(chooseProtocol(new Set(['jarvis.token.jv_x'])), false)
   assert.equal(chooseProtocol(new Set()), false)
+})
+
+test('a media key works while live, and dies when dropped or the device is unpaired', () => {
+  const { id, name } = createDevice('Media phone', file)
+  const key = issueMediaKey({ id, name })
+  assert.equal(deviceForMediaKey(key, file)?.name, 'Media phone')
+  assert.equal(deviceForMediaKey('nope', file), null)
+  dropMediaKey(key)
+  assert.equal(deviceForMediaKey(key, file), null)
+
+  const again = issueMediaKey({ id, name })
+  revokeDevice('Media phone', file)
+  assert.equal(deviceForMediaKey(again, file), null)
 })
 
 // --- policy ----------------------------------------------------------------
@@ -212,6 +228,11 @@ test('a paired token gets past the host and origin checks over HTTP; nothing els
     (await http('GET', '/health', { ...TAILNET, authorization: 'Bearer jv_wrong' })).statusCode,
     403,
   )
+})
+
+test('a made-up media key opens nothing, and a token is not accepted as one', async () => {
+  assert.equal((await http('GET', '/file?path=x&k=madeup', TAILNET)).statusCode, 403)
+  assert.equal((await http('GET', `/img?url=x&k=${token}`, TAILNET)).statusCode, 403)
 })
 
 test('a preflight that asks to send a token is answered, and grants nothing by itself', async () => {

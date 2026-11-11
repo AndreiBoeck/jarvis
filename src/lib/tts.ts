@@ -5,6 +5,7 @@ import {
   TTS_ENGINE,
   KOKORO_VOICE,
   BRIDGE_HTTP_URL,
+  bridgeHeaders,
 } from '../config'
 import * as kokoro from './kokoro'
 import { caps } from './capabilities'
@@ -101,7 +102,16 @@ if (typeof window !== 'undefined') {
  * through the same dead path. After the first real failure everything routes to
  * the bridge's speech proxy instead, which holds an ElevenLabs key already.
  */
-let nativeBroken = false
+/**
+ * Whether this page has a system voice at all. Desktop browsers do; Android's
+ * WebView — which is what the JARVIS app runs in — does not, and touching
+ * `speechSynthesis` there throws. Without one, every sentence goes through
+ * the bridge's speech proxy from the start, exactly as if the system voice had
+ * already proved broken.
+ */
+const HAS_SYSTEM_VOICE = typeof speechSynthesis !== 'undefined'
+
+let nativeBroken = !HAS_SYSTEM_VOICE
 
 let speakingAt = 0
 
@@ -210,6 +220,7 @@ const USABLE = 40
 
 /** Best-first list of usable voices — also what the voice picker cycles. */
 export function candidateVoices(): SpeechSynthesisVoice[] {
+  if (!HAS_SYSTEM_VOICE) return []
   return speechSynthesis
     .getVoices()
     .filter((v) => /^en/i.test(v.lang))
@@ -223,6 +234,7 @@ let cachedVoice: SpeechSynthesisVoice | null | undefined
 
 function pickVoice(): SpeechSynthesisVoice | null {
   if (cachedVoice !== undefined) return cachedVoice
+  if (!HAS_SYSTEM_VOICE) return (cachedVoice = null)
   const all = speechSynthesis.getVoices()
   if (!all.length) return null // not loaded yet — try again next utterance
 
@@ -244,7 +256,7 @@ function pickVoice(): SpeechSynthesisVoice | null {
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
 export function currentVoiceName(): string {
-  if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'
+  if (USE_ELEVENLABS || caps().tts || !HAS_SYSTEM_VOICE) return 'ElevenLabs'
   if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
     return KOKORO_VOICE.replace(/^bm_/, '')
   }
@@ -461,6 +473,7 @@ export function createSpeaker(): Speaker {
 
   const speakNative = (text: string) =>
     new Promise<boolean>((resolve) => {
+      if (!HAS_SYSTEM_VOICE) return resolve(false)
       // Chrome's speechSynthesis wedges after cancel().
       //
       // This is the single most likely reason a whole session goes silent. The
@@ -718,7 +731,7 @@ export function createSpeaker(): Speaker {
       // Only reach for the global cancel if this speaker actually has a native
       // utterance out — speechSynthesis.cancel() is document-wide and would
       // otherwise silence an unrelated speaker mid-word.
-      if (nativeInFlight) {
+      if (nativeInFlight && HAS_SYSTEM_VOICE) {
         nativeInFlight = false
         speechSynthesis.cancel()
         // Always pair the cancel with a resume — see the note in speakNative.
@@ -743,7 +756,7 @@ async function fetchCloudAudio(text: string): Promise<string | null> {
     try {
       const res = await fetch(`${BRIDGE_HTTP_URL}/tts`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: bridgeHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify({ text }),
       })
       if (res.ok) return URL.createObjectURL(await res.blob())

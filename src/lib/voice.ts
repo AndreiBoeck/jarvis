@@ -1,4 +1,4 @@
-import { BRIDGE_HTTP_URL } from '../config'
+import { BRIDGE_HTTP_URL, IS_APP, bridgeHeaders } from '../config'
 import { getMic } from './audio'
 import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
@@ -452,7 +452,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     try {
       const res = await fetch(`${BRIDGE_HTTP_URL}/stt`, {
         method: 'POST',
-        headers: { 'content-type': blob.type || 'audio/webm' },
+        headers: bridgeHeaders({ 'content-type': blob.type || 'audio/webm' }),
         body: blob,
       })
       diag.idleMs = Math.round(performance.now() - t0)
@@ -539,6 +539,9 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       }
     },
     onEnd: (blob) => {
+      // The app has no wake word — a tap starts a turn — so while he is
+      // dormant nothing said near the phone is worth sending anywhere.
+      if (IS_APP && h.mode() === 'wake') return
       pendingAudio.push(blob)
       void drain()
     },

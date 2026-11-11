@@ -24,8 +24,12 @@ import { visionServer } from './vision.mjs'
 import { phoneServer } from './phone.mjs'
 import {
   DeviceHub,
+  MEDIA_ROUTES,
   chooseProtocol,
+  deviceForMediaKey,
   deviceForToken,
+  dropMediaKey,
+  issueMediaKey,
   listDevices,
   tokenFromRequest,
 } from './devices.mjs'
@@ -762,8 +766,15 @@ const handleRequest = async (req, res) => {
 
   // A paired device has proved itself with its token, which is a stronger
   // statement than either check below can make — and it reaches us under the
-  // tailnet name, from an app origin, so it would fail both.
-  const device = deviceForToken(tokenFromRequest(req))
+  // tailnet name, from an app origin, so it would fail both. Media loads (an
+  // <img> cannot send a header) prove it with a media key instead, which
+  // opens those GET routes and nothing else.
+  const route = (req.url ?? '/').split('?')[0]
+  const mediaKey =
+    req.method === 'GET' && MEDIA_ROUTES.includes(route)
+      ? new URL(req.url, 'http://x').searchParams.get('k')
+      : null
+  const device = deviceForToken(tokenFromRequest(req)) ?? deviceForMediaKey(mediaKey)
   if (!device && !hostAllowed(req.headers.host)) {
     console.warn(`[jarvis] refused http request for host ${req.headers.host ?? '(none)'}`)
     res.writeHead(403)
@@ -886,7 +897,11 @@ const handleRequest = async (req, res) => {
     const target = asked.searchParams.get('url') ?? ''
     const mode = asked.searchParams.get('mode') === 'live' ? 'live' : 'reader'
     try {
-      const page = await renderPage(target, mode, `http://localhost:${PORT}`)
+      // For a phone, images inside the page must come back the way the phone
+      // reached us — through the tailnet name, carrying its media key.
+      const page = device
+        ? await renderPage(target, mode, `https://${req.headers.host}`, mediaKey ?? undefined)
+        : await renderPage(target, mode, `http://localhost:${PORT}`)
       res.writeHead(200, { ...cors, ...page.headers })
       return res.end(page.body)
     } catch (err) {
@@ -1216,10 +1231,16 @@ wss.on('connection', (socket, req) => {
     `[jarvis] client connected${req.jarvisDevice ? ` (${req.jarvisDevice.name})` : ''}`,
   )
 
+  // A paired phone's interface loads images and pages by URL, which cannot
+  // carry its token. This key opens those routes for as long as the socket
+  // lives. See issueMediaKey.
+  const mediaKey = req.jarvisDevice ? issueMediaKey(req.jarvisDevice) : null
+  const withKey = (msg) => (mediaKey ? { ...msg, mediaKey } : msg)
+
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
   socket.send(
-    JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
+    JSON.stringify(withKey({ type: 'ready', servers: Object.keys(MCP_SERVERS) })),
   )
 
   /** Resolves the pending user message into the SDK's input generator. */
@@ -1604,7 +1625,7 @@ wss.on('connection', (socket, req) => {
               const usable = (msg.mcp_servers ?? [])
                 .filter((s) => s.status !== 'needs-auth' && s.status !== 'failed')
                 .map((s) => s.name)
-              send({ type: 'ready', servers: usable })
+              send(withKey({ type: 'ready', servers: usable }))
               console.log(`[jarvis] ${usable.length} MCP servers available`)
             }
             break
@@ -1688,6 +1709,7 @@ wss.on('connection', (socket, req) => {
 
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
+    if (mediaKey) dropMediaKey(mediaKey)
     closed = true
     deliver?.(null)
     session.close?.()
