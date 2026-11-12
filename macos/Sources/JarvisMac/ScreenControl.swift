@@ -79,14 +79,14 @@ final class ScreenControl {
             if text.count > 300 { text = String(text.prefix(300)) + "…" }
 
             let keep = Self.interesting.contains(role) && (!text.isEmpty || role != "AXStaticText")
-            if keep, let frame = frame(el), frame.width > 1, frame.height > 1 {
+            if keep, let rect = frame(el), rect.width > 1, rect.height > 1 {
                 let id = "e\(list.count + 1)"
                 found[id] = el
                 var item: [String: Any] = [
                     "id": id,
                     "role": role.replacingOccurrences(of: "AX", with: ""),
-                    "x": Int(frame.midX), "y": Int(frame.midY),
-                    "w": Int(frame.width), "h": Int(frame.height),
+                    "x": Int(rect.midX), "y": Int(rect.midY),
+                    "w": Int(rect.width), "h": Int(rect.height),
                 ]
                 if !text.isEmpty { item["text"] = text }
                 if let subrole, subrole != "AXUnknown" { item["subrole"] = subrole.replacingOccurrences(of: "AX", with: "") }

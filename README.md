@@ -263,7 +263,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
-| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `watch` |
+| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `mac`, `watch` |
 | `JARVIS_WATCH_MODEL` | `JARVIS_MODEL` | The model each background watch check runs on |
 | `JARVIS_WATCH_EFFORT` | `low` | Reasoning effort for a watch check |
 | `JARVIS_WATCH_BUDGET_USD` | `0.5` | Spending cap on a single watch check |
@@ -390,6 +390,58 @@ action. Calls, texts and replies are also confirmed on the phone itself, and
 banking, wallet, payment and authenticator apps are never read or touched: their
 notifications are left out, and screen reading, taps and typing refuse while one
 is in front.
+
+## Your MacBook
+
+The JARVIS app for macOS (`macos/`, native Swift) works two ways — pick one in
+its **Configurações** window, and switch whenever you like:
+
+- **Paired with the PC** — exactly like the phone. The Mac shows the JARVIS
+  interface (wake word and the full scene included) and links to the bridge on
+  the PC through Tailscale, so JARVIS — asked on the PC, the phone or the Mac —
+  can work the Mac. Nothing but the app runs on the Mac.
+- **The whole JARVIS on the Mac** — the app starts the bridge and the interface
+  from a checkout of this repository on the Mac (`npm start` under the hood),
+  shows it, and links its own hands to that local bridge. Needs Node.js and
+  Claude Code, logged in, on the Mac. The PC can be off.
+
+Either way, JARVIS can open and quit apps, open links, read the front window
+(accessibility), take screenshots, click, scroll, type and press shortcuts,
+control what is playing and the volume, use the clipboard, show notifications,
+and — confirmed on the Mac first — run your Shortcuts and send iMessages.
+
+Build it on the Mac (needs the Xcode command line tools: `xcode-select --install`):
+
+```bash
+npm install
+npm run mac -- --install     # builds JARVIS.app and copies it to /Applications
+```
+
+Set `JARVIS_BRIDGE_URL=wss://your-pc.your-tailnet.ts.net` while building to
+pre-fill the PC's address. For paired mode, on the PC (with
+`tailscale serve --bg 8787` already set up, as for the phone):
+
+```bash
+npm run pair -- --mac "MacBook"
+```
+
+Paste the token into Configurações and click **Salvar e conectar**. Local mode
+pairs itself. Then grant, in the same window, what you want JARVIS to have:
+Accessibility (read the screen, click, type), Screen Recording (screenshots),
+Microphone and Contacts. The token is kept in the macOS Keychain.
+
+Closing the window keeps JARVIS running in the menu bar (the hexagon icon); quit
+from there. The same gates as the phone apply: reading runs freely, acting needs
+write access, iMessages and Shortcuts wait for **Permitir** on the Mac, and
+password managers, Keychain Access, banks and wallets are never read or touched
+while in front — nor is a clipboard a password manager marked as secret.
+
+The app is signed ad hoc, which is enough to run on your own Mac. macOS ties
+Accessibility and Screen Recording to the signature, so after rebuilding you may
+need to switch those two off and on again — or set `JARVIS_SIGN_IDENTITY` to a
+code-signing certificate in your keychain to keep them. WebKit has no built-in
+speech recognition inside an app, so use an ElevenLabs key for hearing (or, in
+local mode, **Abrir no Chrome** from the menu bar).
 
 ## Troubleshooting
 

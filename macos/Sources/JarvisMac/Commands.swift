@@ -204,9 +204,9 @@ final class Commands {
 
     private func sendIMessage(to: String, message: String) -> [String: Any] {
         guard !to.isEmpty, !message.isEmpty else { return Reply.error("Say who to message and what to say.") }
-        let resolved = Contacts.resolve(to)
+        let resolved = ContactLookup.resolve(to)
         guard let best = resolved.first else {
-            return Reply.error(Contacts.lastError ?? "There is no contact called \(to) on the Mac.")
+            return Reply.error(ContactLookup.lastError ?? "There is no contact called \(to) on the Mac.")
         }
         let (handle, who) = best
         guard Confirm.ask(
@@ -301,7 +301,7 @@ enum Apps {
 
 // MARK: - contacts
 
-enum Contacts {
+enum ContactLookup {
     static var lastError: String?
 
     /// A phone number or email as is; a name looked up in Contacts. Returns

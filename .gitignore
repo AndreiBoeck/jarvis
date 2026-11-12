@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-app
+dist-mac
 dist-ssr
 *.local
 
@@ -26,3 +27,7 @@ dist-ssr
 
 # Copied out of node_modules by scripts/start.mjs — 34MB of build output.
 public/mediapipe/
+
+# The macOS app's build output (npm run mac).
+macos/.build/
+macos/build/

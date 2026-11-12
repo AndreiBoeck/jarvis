@@ -1,0 +1,23 @@
+# Compiles the JARVIS app for macOS on a GitHub-hosted Mac, so a change to
+# macos/ is known to build even when it was written on Windows or Linux.
+name: macOS app
+
+on:
+  push:
+    paths: ['macos/**', '.github/workflows/macos-app.yml']
+  pull_request:
+    paths: ['macos/**', '.github/workflows/macos-app.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: swift build --package-path macos -c release
+      - name: Assemble the app bundle (without the interface)
+        run: bash macos/build.sh /nonexistent ""
