@@ -1375,6 +1375,15 @@ function promptWhere(kind, name) {
       '- The jarvis_phone tools act on this same phone, the one in their hand. Opening',
       '  an app with them takes them out of the JARVIS app.',
     )
+  } else if (kind === 'car') {
+    lines.push(
+      `- This conversation is happening in their car, through Android Auto and their phone${name ? ` ("${name}")` : ''}.`,
+      '  They are driving. It is voice only: there is no screen for you here, so never',
+      '  use display or blade for this car — say it. Keep every answer short enough to',
+      '  hear once at speed: one or two sentences, the headline first.',
+      '- The jarvis_phone tools act on the phone that is plugged into the car. Do not',
+      '  open apps or read the screen on it unless they ask; navigation is fine.',
+    )
   } else if (kind === 'mac') {
     lines.push(
       `- This conversation is happening through the JARVIS app on their MacBook${name ? ` ("${name}")` : ''}.`,
@@ -1396,7 +1405,7 @@ function promptWhere(kind, name) {
       '  or the computer at home: pass screen "pc". It appears there silently.',
     )
   }
-  if (kind !== 'phone' && phone) {
+  if (kind !== 'phone' && kind !== 'car' && phone) {
     lines.push(
       "- Their phone is a separate device. To show something on the phone's JARVIS",
       '  screen pass screen "phone" (only while the app is open there). To act on the',
@@ -1552,8 +1561,12 @@ wss.on('connection', (socket, req) => {
   // A paired device is the phone or Mac app, by how it was paired; anything
   // else is the interface on this machine.
   const screenId = ++screenSeq
-  const screenKind = req.jarvisDevice?.kind ?? 'pc'
-  screens.set(screenId, {
+  // A phone opening its conversation with ?surface=car is Android Auto: voice
+  // only, nothing to draw on, so it is never offered as a screen to the others.
+  const surface = new URL(req.url ?? '/', 'http://x').searchParams.get('surface')
+  const screenKind =
+    req.jarvisDevice?.kind === 'phone' && surface === 'car' ? 'car' : (req.jarvisDevice?.kind ?? 'pc')
+  if (screenKind !== 'car') screens.set(screenId, {
     kind: screenKind,
     name: req.jarvisDevice?.name ?? '',
     since: Date.now(),
@@ -1562,6 +1575,12 @@ wss.on('connection', (socket, req) => {
 
   /** Open a blade here, or on the other screen when the model names it. */
   const routeBlade = (blade, screen) => {
+    if (screenKind === 'car' && (!screen || screen === 'here' || screen === 'car')) {
+      return {
+        error:
+          'Not shown: this conversation is in the car, which has no JARVIS screen. Say it instead.',
+      }
+    }
     if (!screen || screen === 'here' || screen === screenKind) {
       send({ type: 'blade', blade })
       return { label: '' }

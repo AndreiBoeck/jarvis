@@ -101,6 +101,27 @@
             </intent-filter>
         </service>
 
+        <!-- Android Auto: the JARVIS screen on the car display (IoT category), and
+             the message conversation Android Auto reads aloud and answers by voice. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <!-- Car API 5 is the first with the car's own microphone. -->
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="5" />
+
+        <service
+            android:name=".car.JarvisCarAppService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.IOT" />
+            </intent-filter>
+        </service>
+
+        <receiver android:name=".car.CarReplyReceiver" android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
