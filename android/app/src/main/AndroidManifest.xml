@@ -101,7 +101,7 @@
             </intent-filter>
         </service>
 
-        <!-- Android Auto: the JARVIS screen on the car display (IoT category), and
+        <!-- Android Auto: the JARVIS screen on the car display (POI category), and
              the message conversation Android Auto reads aloud and answers by voice. -->
         <meta-data
             android:name="com.google.android.gms.car.application"
@@ -116,7 +116,11 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
-                <category android:name="androidx.car.app.category.IOT" />
+                <!-- POI, not IOT: Android Auto only opens IoT apps with its beta
+                     features switched on, and otherwise falls back to showing
+                     JARVIS as a messaging app. POI is long-standing and takes
+                     the same list screen. -->
+                <category android:name="androidx.car.app.category.POI" />
             </intent-filter>
         </service>
 

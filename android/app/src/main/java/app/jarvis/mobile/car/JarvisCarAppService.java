@@ -6,8 +6,9 @@ import androidx.car.app.Session;
 import androidx.car.app.validation.HostValidator;
 
 /**
- * JARVIS in Android Auto. Declared in the manifest under the IoT category —
- * "act on things at home from the car" is what this is.
+ * JARVIS in Android Auto. Declared in the manifest under the POI category:
+ * IoT would describe it better, but Android Auto treats IoT as a beta
+ * category and, with beta features off, ignored this screen entirely.
  */
 public class JarvisCarAppService extends CarAppService {
 
