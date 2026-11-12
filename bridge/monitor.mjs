@@ -84,6 +84,7 @@ function save(watches, file) {
  * @property {string} task        what to look at, in words
  * @property {string} notifyWhen  what is worth interrupting the user for
  * @property {string} why         why this interval was chosen, kept for the user
+ * @property {'speak'|'call'} notifyBy  say it on screen, or ring the user too
  * @property {number} intervalMinutes
  * @property {'active'|'paused'|'finished'} status
  * @property {number} createdAt
@@ -166,7 +167,7 @@ export class Watchtower {
    * later — and so the first observation is on record for the next check to
    * compare with.
    */
-  create({ task, notifyWhen, intervalMinutes, why = '', forHours = null }) {
+  create({ task, notifyWhen, intervalMinutes, why = '', forHours = null, notifyBy = 'speak' }) {
     if (this.active().length >= MAX_ACTIVE) {
       throw new Error(
         `There are already ${MAX_ACTIVE} watches running. Stop one before starting another.`,
@@ -180,6 +181,7 @@ export class Watchtower {
       task: String(task).trim(),
       notifyWhen: String(notifyWhen ?? '').trim(),
       why: String(why ?? '').trim(),
+      notifyBy: notifyBy === 'call' ? 'call' : 'speak',
       intervalMinutes: clampMinutes(intervalMinutes),
       status: 'active',
       createdAt: t,
@@ -256,6 +258,10 @@ export class Watchtower {
       task: w.task,
       kind,
       message,
+      // How the user asked to hear about it. A watch that has broken is
+      // only ever spoken: ringing someone to say a check failed is not news
+      // worth a phone call.
+      channel: kind === 'alert' && w.notifyBy === 'call' ? 'call' : 'speak',
       at: this.now(),
     }
     w.lastAlert = { at: alert.at, message }
@@ -428,7 +434,7 @@ WHETHER TO ALERT
 - Alert only when the condition the user gave holds now and it is news: they have not already been told about this same state. A price still under the threshold after you already said so is not news; it crossing back and then under again is.
 - If you could not get the information, do not alert; say so in the observation.
 
-THE MESSAGE (only when alerting) is spoken aloud by JARVIS, unprompted:
+THE MESSAGE (only when alerting) is spoken aloud by JARVIS, unprompted — on screen, or as the opening line of a phone call to the user:
 - One or two short sentences, plain spoken prose, no markdown, no URLs, numbers as they are said.
 - It is information the user did not just ask for, so "Sir" goes at the front: "Sir, the package has left the Curitiba depot."
 - Dry British service register. No exclamation marks, no enthusiasm, no apology.
@@ -452,6 +458,7 @@ export function watchServer(tower) {
       id: w.id,
       task: w.task,
       notify_when: w.notifyWhen,
+      notify_by: w.notifyBy ?? 'speak',
       status: w.status,
       every_minutes: w.intervalMinutes,
       next_check_in_minutes: w.status === 'active' ? mins(w.nextRunAt) : null,
@@ -502,6 +509,10 @@ export function watchServer(tower) {
             .positive()
             .optional()
             .describe('Stop automatically after this many hours. Leave out to keep watching until it finishes or is stopped.'),
+          notify_by: z
+            .enum(['speak', 'call'])
+            .optional()
+            .describe('"call" when they asked to be phoned ("call me when..."): the alert rings their phone through ElevenLabs as well as being spoken here. Otherwise "speak".'),
         },
         async (args) => {
           try {
@@ -511,6 +522,7 @@ export function watchServer(tower) {
               intervalMinutes: args.interval_minutes,
               why: args.why,
               forHours: args.for_hours,
+              notifyBy: args.notify_by,
             })
             return ok({ started: describe(w), note: 'The first check is running now.' })
           } catch (err) {

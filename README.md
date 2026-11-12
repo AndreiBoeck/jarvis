@@ -195,6 +195,26 @@ Each check costs a few cents on your account (about $0.07 on the default model
 at low effort), so a five-minute watch left running all day adds up; set
 `JARVIS_WATCH_MODEL` to a cheaper model if you keep many.
 
+### JARVIS makes calls
+
+Calls go out through an ElevenLabs conversational agent, and which kind depends
+on what you ask:
+
+- *"Call me"* rings your own number (`JARVIS_CALL_TO`).
+- *"Call me as soon as a message arrives"* starts a watch that rings you when
+  it does.
+- *"Call my dentist and tell them I'm running twenty minutes late"* rings the
+  dentist. That call opens as Friday — *"Hello, I'm Friday, Andrei's AI
+  assistant, calling on his behalf"* (`JARVIS_CALL_INTRO`) — then does the task
+  in their language. *"How did the call go?"* reads back the outcome.
+- *"Use my phone to call Maria"* is the one case that dials from your own
+  phone instead.
+
+The agent has to allow per-call overrides of the first message, system prompt
+and language (its **Security** settings), because each call carries its own
+instructions; the bridge warns at start-up when it does not. Calling anyone but
+you needs write access.
+
 ### JARVIS controls the interface
 
 He drives the UI through MCP tools the bridge exposes:
@@ -266,9 +286,11 @@ Read from the shell, and from `.env.local` for anything the shell does not set.
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
 | `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `mac`, `watch` |
-| `JARVIS_CALL_AGENT_ID` | none | ElevenLabs agent that rings you; JARVIS calls you only this way |
-| `JARVIS_CALL_FROM_NUMBER_ID` | none | ElevenLabs phone-number id the call comes from |
-| `JARVIS_CALL_TO` | none | Your own number, e.g. `+5511…`; without it calling stays off |
+| `JARVIS_CALL_TO` | none | Your own number, e.g. `+5511…`, for "call me" and calling watches |
+| `JARVIS_USER_NAME` | none | Who JARVIS says he is calling on behalf of |
+| `JARVIS_CALL_INTRO` | `Hello, I'm Friday, {name}'s AI assistant, calling on his behalf.` | How a call to someone else opens |
+| `JARVIS_CALL_AGENT_ID` | the number's agent | ElevenLabs agent that places calls |
+| `JARVIS_CALL_FROM_NUMBER_ID` | the agent's number | ElevenLabs phone-number id calls come from |
 | `JARVIS_WATCH_MODEL` | `JARVIS_MODEL` | The model each background watch check runs on |
 | `JARVIS_WATCH_EFFORT` | `low` | Reasoning effort for a watch check |
 | `JARVIS_WATCH_BUDGET_USD` | `0.5` | Spending cap on a single watch check |

@@ -171,6 +171,11 @@ export function decideTool(name, allowWrites = false) {
     // read as writes to the verb rules below.
     if (server === 'jarvis_watch') return true
 
+    // Calls. Ringing the user can only ever reach their own configured
+    // number, and reading how a call went changes nothing; ringing anyone
+    // else speaks for them to a stranger, so it waits for allowWrites.
+    if (server === 'jarvis_call') return mcpToolOf(name) !== 'call_someone' || allowWrites
+
     const tool = mcpToolOf(name)
 
     // The phone. Named outright rather than left to the verb rules, which

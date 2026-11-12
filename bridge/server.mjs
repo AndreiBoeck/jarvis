@@ -31,6 +31,7 @@ import {
   checkPrompt,
   watchServer,
 } from './monitor.mjs'
+import { Caller, callServer, maskNumber } from './calls.mjs'
 import {
   DeviceHub,
   MEDIA_ROUTES,
@@ -515,8 +516,8 @@ const PROMPT_PHONE = `Their phone — the \`jarvis_phone\` tools:
 - To work an app you have no tool for: open_app, then read_screen to see what is
   there, then tap / type_text / swipe, reading again after each step. Use a
   screenshot only when the look of the screen is the question.
-- Calling THEM is never done from here: \`call\` dials out from their own phone,
-  which cannot ring itself. Use it only to call someone else for them.
+- \`call\` dials from their own handset. Use it only when they explicitly ask to
+  call someone from their phone; every other call goes through ElevenLabs.
 - Calls, texts and replies wait for them to tap "allow" on the phone. Say once,
   briefly, that it is waiting on their phone — do not ask them to confirm aloud.
 - If the phone is not connected, say so in one sentence. Never act on a phone
@@ -555,29 +556,43 @@ const PROMPT_WATCH = `Keeping watch — the \`jarvis_watch\` tools:
 
 `
 /**
- * Ringing the user. Always an ElevenLabs agent call: it reaches them wherever
- * they are and speaks in the JARVIS voice, where the phone's own dialler can
- * only call other people. The ids and the number come from the environment
- * (JARVIS_CALL_*, usually .env.local); whatever is missing, the model is told
- * how to find it or to say that calling is not set up.
+ * Telephone calls, which are three different requests (see calls.mjs). The
+ * user's own number is read from the environment and handed to the caller,
+ * never to the model: it does not need it, and a number in the prompt is a
+ * number a web page can ask it to read out.
  */
-const CALL_AGENT_ID = process.env.JARVIS_CALL_AGENT_ID?.trim() || ''
-const CALL_FROM_ID = process.env.JARVIS_CALL_FROM_NUMBER_ID?.trim() || ''
-const CALL_TO = process.env.JARVIS_CALL_TO?.trim() || ''
-const CALLS_AVAILABLE = Object.hasOwn(MCP_SERVERS, 'elevenlabs')
+const caller = new Caller({
+  key: () => elevenKey(),
+  agentId: process.env.JARVIS_CALL_AGENT_ID?.trim() || '',
+  fromId: process.env.JARVIS_CALL_FROM_NUMBER_ID?.trim() || '',
+  userNumber: process.env.JARVIS_CALL_TO ?? '',
+  userName: process.env.JARVIS_USER_NAME ?? '',
+  intro: process.env.JARVIS_CALL_INTRO ?? '',
+})
+const CALLS_AVAILABLE = !DISABLED.has('calls') && Boolean(elevenKey())
 
-const PROMPT_CALL = `Calling them — ALWAYS through ElevenLabs:
-- When they ask you to call them, ring them, or phone them — or anything is
-  worth a call — use \`make_outbound_call\` from the elevenlabs tools. Nothing
-  else: never the phone's \`call\`, never another server.
-- ${CALL_AGENT_ID ? `agent_id: ${CALL_AGENT_ID}` : 'agent_id: find the JARVIS agent with `list_agents`.'}
-- ${CALL_FROM_ID ? `agent_phone_number_id: ${CALL_FROM_ID}` : 'agent_phone_number_id: find it with `list_phone_numbers`.'}
-- ${
-  CALL_TO
-    ? `to_number: ${CALL_TO} — their own number. Never call any other number this way unless they say so.`
-    : 'to_number: their number is not configured. Say once that calling is not set up yet, and do not guess a number.'
-}
-- If the elevenlabs tools are unavailable, say so in one sentence.
+const PROMPT_CALL = `Telephone calls — three different requests, three different tools:
+- "Call me", "ring me", "phone me" → \`call_me\`. JARVIS rings THEIR phone
+  through ElevenLabs. You never need their number.
+- "Call me when…", "ring me if…" → a watch with notify_by "call". The watch
+  rings them when the condition is met. Do not call now.
+- "Call my dentist and tell them…", "ring the restaurant and book…" →
+  \`call_someone\`. JARVIS rings that person through ElevenLabs and does the
+  task by voice. You need their full number: from what they told you or what
+  you can look up; ask for it if you have neither, never guess one. Write the
+  task with every detail and say in one sentence what you are about to do
+  before you do it. On those calls the voice introduces itself as Friday,
+  their AI assistant; that opening is fixed, so you do not write one.
+- "Use my phone to call…", "call X from my phone" → the phone's own \`call\`.
+  ONLY when they say to use their phone.
+- Never use the elevenlabs server's own \`make_outbound_call\`: it cannot carry
+  the task.
+- A call runs on its own after it starts. When they ask how it went, use
+  \`call_status\` with its conversation id.
+- You speak English to them always. A call to someone else is in that
+  person's language.${caller.userNumber ? '' : `
+- Their own number is not configured, so \`call_me\` and calling watches will
+  fail; say once that calling them is not set up.`}
 
 `
 
@@ -1323,6 +1338,15 @@ const tower = DISABLED.has('watch')
       notify: (alert) => {
         console.log(`[jarvis] watch ${alert.watchId} alert: ${alert.message}`)
         for (const send of interfaces) send({ type: 'alert', alert })
+        // "Call me when…": ring them too. Placed by the bridge, not by the
+        // check agent, so the unattended check never holds a tool that
+        // dials — and the only number it can reach is their own.
+        if (alert.channel === 'call') {
+          caller
+            .callUser(alert.message)
+            .catch((err) => console.warn(`[jarvis] watch ${alert.watchId} could not call: ${err.message}`))
+          return interfaces.size || 1
+        }
         return interfaces.size
       },
     })
@@ -1468,6 +1492,21 @@ if (!DISABLED.has('phone')) {
       ? `[jarvis] paired devices: ${paired.map((d) => `${d.name} (${d.kind})`).join(', ')}`
       : '[jarvis] no device paired — run `npm run pair -- <name>` (or `-- --mac <name>`) to link one',
   )
+}
+if (CALLS_AVAILABLE) {
+  void caller
+    .line()
+    .then(async (line) => {
+      const missing = await caller.missingOverrides().catch(() => [])
+      console.log(
+        `[jarvis] calls via ElevenLabs from ${maskNumber(line.from)} · ` +
+          (caller.userNumber ? `rings you on ${maskNumber(caller.userNumber)}` : 'your number is not set (JARVIS_CALL_TO)') +
+          (missing.length
+            ? ` · WARNING: the agent refuses per-call ${missing.join(', ')} — enable those overrides in its Security settings`
+            : ''),
+      )
+    })
+    .catch((err) => console.warn(`[jarvis] calls unavailable: ${err.message}`))
 }
 if (tower) {
   const live = tower.active()
@@ -1765,6 +1804,8 @@ wss.on('connection', (socket, req) => {
         // Standing watches. One scheduler for the whole process, shared by
         // every connection, so a watch outlives the socket that started it.
         ...(tower ? { jarvis_watch: watchServer(tower) } : {}),
+        // Calls through ElevenLabs: ringing the user, or someone else for them.
+        ...(CALLS_AVAILABLE ? { jarvis_call: callServer(caller) } : {}),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
