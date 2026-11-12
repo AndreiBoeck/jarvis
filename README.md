@@ -253,6 +253,8 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 
 ### Bridge
 
+Read from the shell, and from `.env.local` for anything the shell does not set.
+
 | Variable | Default | Effect |
 |---|---|---|
 | `JARVIS_BRIDGE_PORT` | `8787` | Port for the WebSocket + HTTP endpoints |
@@ -264,6 +266,9 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
 | `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `mac`, `watch` |
+| `JARVIS_CALL_AGENT_ID` | none | ElevenLabs agent that rings you; JARVIS calls you only this way |
+| `JARVIS_CALL_FROM_NUMBER_ID` | none | ElevenLabs phone-number id the call comes from |
+| `JARVIS_CALL_TO` | none | Your own number, e.g. `+5511…`; without it calling stays off |
 | `JARVIS_WATCH_MODEL` | `JARVIS_MODEL` | The model each background watch check runs on |
 | `JARVIS_WATCH_EFFORT` | `low` | Reasoning effort for a watch check |
 | `JARVIS_WATCH_BUDGET_USD` | `0.5` | Spending cap on a single watch check |

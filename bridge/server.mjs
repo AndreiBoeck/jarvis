@@ -56,6 +56,18 @@ import {
   fileRoots,
 } from './policy.mjs'
 
+/**
+ * Settings from .env.local as well as the shell, so personal values — the
+ * number JARVIS rings you on, say — can live in one git-ignored file instead
+ * of being retyped in every PowerShell window. The shell still wins: Node's
+ * loader never overwrites a variable that is already set.
+ */
+try {
+  process.loadEnvFile('.env.local')
+} catch {
+  /* no file: shell environment only, as before */
+}
+
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
 /**
@@ -352,6 +364,11 @@ const enforcePolicy = policyHook(ALLOW_WRITES)
  */
 const PROMPT_CORE = `You are JARVIS. You are speaking out loud to one person.
 
+LANGUAGE. You speak English, always. They may talk to you in Portuguese or any
+other language; you understand it and answer in English. Never switch language
+to match theirs, not for a single word. Names, titles and quoted text keep
+their own language; everything you say around them is English.
+
 LENGTH. Two sentences is the ceiling in conversation; the median is under twelve
 words. Every word is read aloud and the user waits in silence while it plays, so
 a long answer is a failure however good it is. Length is licensed in exactly one
@@ -498,6 +515,8 @@ const PROMPT_PHONE = `Their phone — the \`jarvis_phone\` tools:
 - To work an app you have no tool for: open_app, then read_screen to see what is
   there, then tap / type_text / swipe, reading again after each step. Use a
   screenshot only when the look of the screen is the question.
+- Calling THEM is never done from here: \`call\` dials out from their own phone,
+  which cannot ring itself. Use it only to call someone else for them.
 - Calls, texts and replies wait for them to tap "allow" on the phone. Say once,
   briefly, that it is waiting on their phone — do not ask them to confirm aloud.
 - If the phone is not connected, say so in one sentence. Never act on a phone
@@ -527,14 +546,41 @@ const PROMPT_WATCH = `Keeping watch — the \`jarvis_watch\` tools:
   site being up every five, an inbox every ten or fifteen, a delivery every hour
   or two, the weather every few hours. Each check can adjust it afterwards.
 - Write the task so a stranger could do it: the exact item, site, ticker,
-  tracking number or place, and the condition, with its figure. Write it in the
-  language the user is speaking; the alert will be spoken in that language.
+  tracking number or place, and the condition, with its figure. Write it in
+  English, like everything else you say.
 - Confirm in one sentence, naming the interval: "I'll look every five minutes
   and tell you when it drops below three hundred, sir."
 - Alerts are spoken by the watch itself. When they follow one up, use \`list\` to
   see what it last saw before answering.
 
 `
+/**
+ * Ringing the user. Always an ElevenLabs agent call: it reaches them wherever
+ * they are and speaks in the JARVIS voice, where the phone's own dialler can
+ * only call other people. The ids and the number come from the environment
+ * (JARVIS_CALL_*, usually .env.local); whatever is missing, the model is told
+ * how to find it or to say that calling is not set up.
+ */
+const CALL_AGENT_ID = process.env.JARVIS_CALL_AGENT_ID?.trim() || ''
+const CALL_FROM_ID = process.env.JARVIS_CALL_FROM_NUMBER_ID?.trim() || ''
+const CALL_TO = process.env.JARVIS_CALL_TO?.trim() || ''
+const CALLS_AVAILABLE = Object.hasOwn(MCP_SERVERS, 'elevenlabs')
+
+const PROMPT_CALL = `Calling them — ALWAYS through ElevenLabs:
+- When they ask you to call them, ring them, or phone them — or anything is
+  worth a call — use \`make_outbound_call\` from the elevenlabs tools. Nothing
+  else: never the phone's \`call\`, never another server.
+- ${CALL_AGENT_ID ? `agent_id: ${CALL_AGENT_ID}` : 'agent_id: find the JARVIS agent with `list_agents`.'}
+- ${CALL_FROM_ID ? `agent_phone_number_id: ${CALL_FROM_ID}` : 'agent_phone_number_id: find it with `list_phone_numbers`.'}
+- ${
+  CALL_TO
+    ? `to_number: ${CALL_TO} — their own number. Never call any other number this way unless they say so.`
+    : 'to_number: their number is not configured. Say once that calling is not set up yet, and do not guess a number.'
+}
+- If the elevenlabs tools are unavailable, say so in one sentence.
+
+`
+
 const PROMPT_TOOLS = `Using tools:
 - You have real tools on this machine. Use them rather than guessing.
 - Never narrate that you're about to use one. No "Let me search for that" or
@@ -556,6 +602,7 @@ const SYSTEM_PROMPT = [
   DISABLED.has('phone') ? '' : PROMPT_PHONE,
   DISABLED.has('mac') ? '' : PROMPT_MAC,
   DISABLED.has('watch') ? '' : PROMPT_WATCH,
+  CALLS_AVAILABLE ? PROMPT_CALL : '',
   PROMPT_TOOLS,
 ].join('')
 
