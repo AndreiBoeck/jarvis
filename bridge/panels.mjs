@@ -182,6 +182,27 @@ const schema = {
       'turn = clears when the user next speaks, the default. ' +
         'sticky = stays until replaced; use only when the user will refer back to it.',
     ),
+  screen: screenField(),
+}
+
+/**
+ * Which JARVIS screen a panel or blade lands on.
+ *
+ * There can be two: the home PC's and the phone app's, each its own
+ * conversation. Without a choice, whatever JARVIS showed went to the screen
+ * the user happened to be talking through — so "show it on the PC", said to
+ * the phone, opened on the phone, and the model had no way to do better.
+ */
+function screenField() {
+  return z
+    .enum(['here', 'pc', 'phone'])
+    .optional()
+    .catch(undefined)
+    .describe(
+      'Which JARVIS screen. here (the default) = the one the user is talking ' +
+        'through. pc = the home PC. phone = the JARVIS app on their phone. ' +
+        'Only name the other screen when they ask for it there.',
+    )
 }
 
 const DESCRIPTION = `Put something on the JARVIS heads-up display.
@@ -295,6 +316,7 @@ const bladeSchema = {
     .optional()
     .catch(undefined)
     .describe('turn = closes when the user next speaks. sticky = stays until replaced.'),
+  screen: screenField(),
 }
 
 const PROBE_DESCRIPTION = `Find out what is actually at a URL before showing it.
@@ -332,6 +354,12 @@ const noCameraSchema = {
     .describe('What is being opened. See the tool description.'),
 }
 
+/**
+ * @param emit       pushes a panel to this conversation's screen
+ * @param emitBlade  (blade, screen) => { error?, label } — opens a blade on the
+ *                   named screen ('here' | 'pc' | 'phone'); `label` says where
+ *                   it went (' on the PC'), `error` why it could not.
+ */
 export function displayServer(emit, emitBlade, { camera = true } = {}) {
   return createSdkMcpServer({
     name: 'jarvis',
@@ -381,15 +409,19 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
          * The tool keeps its name and its design system because the model is
          * fluent in both; only where the result lands has changed.
          */
-        emitBlade({
-          id: `p${Date.now().toString(36)}-${(seq++).toString(36)}`,
-          title: String(args.title ?? '').trim() || 'DISPLAY',
-          kind: 'markup',
-          html: args.html,
-          size: args.slot === 'wide' ? 'wide' : 'compact',
-          hold: args.hold ?? 'turn',
-        })
-        return { content: [{ type: 'text', text: 'On screen.' }] }
+        const where = emitBlade(
+          {
+            id: `p${Date.now().toString(36)}-${(seq++).toString(36)}`,
+            title: String(args.title ?? '').trim() || 'DISPLAY',
+            kind: 'markup',
+            html: args.html,
+            size: args.slot === 'wide' ? 'wide' : 'compact',
+            hold: args.hold ?? 'turn',
+          },
+          args.screen ?? 'here',
+        )
+        if (where.error) return refuse(where.error)
+        return { content: [{ type: 'text', text: `On screen${where.label}.` }] }
       }),
 
       tool(
@@ -428,8 +460,9 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
           size: args.size ?? (kind === 'article' ? 'tall' : 'wide'),
           hold: args.hold ?? 'turn',
         }
-        emitBlade(blade)
-        return { content: [{ type: 'text', text: `Open on the blades as "${blade.title}".` }] }
+        const where = emitBlade(blade, args.screen ?? 'here')
+        if (where.error) return refuse(where.error)
+        return { content: [{ type: 'text', text: `Open on the blades${where.label} as "${blade.title}".` }] }
       }),
 
       tool(

@@ -1144,6 +1144,61 @@ const wss = new WebSocketServer({
 
 /** Every connected phone, shared by every agent session. See devices.mjs. */
 const devices = new DeviceHub()
+
+/**
+ * Every JARVIS screen open right now: the PC's interface and the phone app's.
+ *
+ * Each is its own conversation, and before this each could only draw on
+ * itself — so the model, asked from the phone to "show it on the PC", put it
+ * on the phone, and had no way of knowing there was a difference. Registered
+ * here so a blade can be sent to the other screen by name.
+ */
+const screens = new Map() // connection id -> { kind: 'pc' | 'phone', name, since, sendBlade }
+let screenSeq = 0
+
+const SCREEN_LABEL = { pc: ' on the PC', phone: ' on the phone' }
+
+/** The most recent open screen of a kind, or null. */
+function screenOf(kind) {
+  let best = null
+  for (const s of screens.values()) {
+    if (s.kind === kind && (!best || s.since > best.since)) best = s
+  }
+  return best
+}
+
+/**
+ * Where this conversation is, for the model.
+ *
+ * Added to the system prompt per connection. Without it, a conversation held
+ * through the phone believed it was on the PC — it is the same assistant,
+ * the same voice, the same tools — and every "show me" landed on the wrong
+ * glass.
+ */
+function promptWhere(kind, name) {
+  if (kind === 'phone') {
+    return `Where they are:
+- This conversation is happening through the JARVIS app on their phone${name ? ` ("${name}")` : ''}.
+  They are most likely away from the PC. Your voice comes out of the phone, and
+  display and blade draw on the phone's screen.
+- The home PC is a separate machine with its own JARVIS screen, and it is not
+  this conversation. Put something there only when they ask for it on the PC or
+  the computer: pass screen "pc". It appears there silently; nothing is spoken
+  on the PC.
+- The jarvis_phone tools act on this same phone, the one in their hand. Opening
+  an app with them takes them out of the JARVIS app.
+
+`
+  }
+  return `Where they are:
+- This conversation is on the home PC's JARVIS screen; display and blade draw
+  here.
+- Their phone is a separate device, wherever they left it. To show something on
+  the phone's JARVIS screen pass screen "phone" (only while the app is open
+  there). To act on the phone itself, use the jarvis_phone tools.
+
+`
+}
 // A port someone else holds is the commonest reason the bridge won't start, and
 // Node's default is an unhandled 'error' event and a stack trace. Say it plainly
 // and exit non-zero, so a launcher knows the brain never came up.
@@ -1228,7 +1283,7 @@ wss.on('connection', (socket, req) => {
   }
 
   console.log(
-    `[jarvis] client connected${req.jarvisDevice ? ` (${req.jarvisDevice.name})` : ''}`,
+    `[jarvis] screen connected: ${req.jarvisDevice ? `phone app (${req.jarvisDevice.name})` : 'PC'}`,
   )
 
   // A paired phone's interface loads images and pages by URL, which cannot
@@ -1266,6 +1321,36 @@ wss.on('connection', (socket, req) => {
 
   const send = (msg) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg))
+  }
+
+  // This screen, registered so other conversations can show things on it.
+  // A paired device is the phone app; anything else is the PC's interface.
+  const screenId = ++screenSeq
+  const screenKind = req.jarvisDevice ? 'phone' : 'pc'
+  screens.set(screenId, {
+    kind: screenKind,
+    name: req.jarvisDevice?.name ?? '',
+    since: Date.now(),
+    sendBlade: (blade) => send({ type: 'blade', blade }),
+  })
+
+  /** Open a blade here, or on the other screen when the model names it. */
+  const routeBlade = (blade, screen) => {
+    if (!screen || screen === 'here' || screen === screenKind) {
+      send({ type: 'blade', blade })
+      return { label: '' }
+    }
+    const target = screenOf(screen)
+    if (!target) {
+      return {
+        error:
+          screen === 'pc'
+            ? 'Not shown: the JARVIS screen on the PC is not open right now. Tell the user in one sentence.'
+            : 'Not shown: the JARVIS app is not open on the phone right now. Tell the user in one sentence.',
+      }
+    }
+    target.sendBlade(blade)
+    return { label: SCREEN_LABEL[screen] }
   }
 
   /**
@@ -1408,7 +1493,7 @@ wss.on('connection', (socket, req) => {
         ...MCP_SERVERS,
         jarvis: displayServer(
           (panel) => send({ type: 'panel', panel }),
-          (blade) => send({ type: 'blade', blade }),
+          routeBlade,
           { camera: !DISABLED.has('camera') },
         ),
         // The interface controls, on the same socket. A separate key because
@@ -1435,7 +1520,11 @@ wss.on('connection', (socket, req) => {
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
       // of input tokens on every turn. Replacing it makes the persona stick,
       // keeps answers short enough to speak, and cuts cost per turn.
-      systemPrompt: SYSTEM_PROMPT,
+      // Plus where this conversation is happening — the PC or the phone —
+      // which the shared prompt cannot know. See promptWhere.
+      systemPrompt: DISABLED.has('phone')
+        ? SYSTEM_PROMPT
+        : SYSTEM_PROMPT + promptWhere(screenKind, req.jarvisDevice?.name),
       // Run from JARVIS's own workspace rather than the home directory. MCP
       // discovery does not depend on it — settingSources is empty and the
       // servers are passed in explicitly above — and file tools resolve
@@ -1710,6 +1799,7 @@ wss.on('connection', (socket, req) => {
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
     if (mediaKey) dropMediaKey(mediaKey)
+    screens.delete(screenId)
     closed = true
     deliver?.(null)
     session.close?.()
