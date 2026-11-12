@@ -65,6 +65,13 @@ export function watchBlades(fn: (blade: Blade) => void): void {
  * server to volunteer anything. On that backend this watcher simply never
  * fires and the interface stays exactly as it ships.
  */
+/** Watches speaking up on their own. Bridge only: the direct path has no
+ *  scheduler to run them. */
+export function watchAlerts(fn: (alert: bridge.WatchAlert) => void): void {
+  if (usingBridge) bridge.watchAlerts(fn)
+}
+export type { WatchAlert } from './bridge'
+
 export function watchUi(fn: (op: string, args: any) => void): void {
   if (usingBridge) bridge.watchUi(fn)
 }

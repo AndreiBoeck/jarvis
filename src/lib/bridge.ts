@@ -37,6 +37,25 @@ type Frame = {
   seconds?: number
   when?: string
   servers?: Array<string | { name?: string }>
+  alert?: WatchAlert
+}
+
+/**
+ * A watch speaking up on its own — a condition the user asked to hear about
+ * has come true. Nobody asked a question, so it arrives outside any turn.
+ */
+export type WatchAlert = {
+  id: string
+  watchId: string
+  task: string
+  kind: 'alert' | 'paused'
+  message: string
+  at: number
+}
+
+let onAlert: ((alert: WatchAlert) => void) | null = null
+export function watchAlerts(fn: (alert: WatchAlert) => void) {
+  onAlert = fn
 }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
@@ -185,6 +204,8 @@ function dispatch(ws: WebSocket) {
       onPanel?.(msg.panel)
     } else if (msg.type === 'blade' && msg.blade) {
       onBlade?.(msg.blade)
+    } else if (msg.type === 'alert' && typeof msg.alert?.message === 'string') {
+      onAlert?.(msg.alert)
     } else if (msg.type === 'capture' && msg.id) {
       const id = msg.id
       const reply = (payload: Record<string, unknown>) => {

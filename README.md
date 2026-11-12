@@ -168,6 +168,33 @@ A few things you can say:
 > to let them in, and `JARVIS_MCP_SERVERS` to choose which `~/.claude.json`
 > servers JARVIS gets.
 
+### JARVIS keeps watch
+
+Ask him to keep an eye on something and he starts a **watch**: a check that runs
+in the background on its own schedule and speaks up only when the condition you
+gave him comes true.
+
+- *"Keep an eye on the Bitcoin price and tell me if it drops below sixty thousand."*
+- *"Let me know when my parcel leaves the depot."*
+- *"Watch the status page and tell me if it goes down."*
+- *"What are you watching?"* · *"Stop watching the parcel."*
+
+He chooses how often to look from how fast the thing changes and how soon you
+would want to know — every few minutes for a live price near its threshold, every
+hour or two for a delivery — and each check can tighten or relax that interval
+as things develop. Each check is its own short agent run that compares what it
+sees with what the previous one saw, so you hear about a change once rather than
+on every pass.
+
+Watches live in the bridge, not the page: they keep running with the interface
+closed, survive a bridge restart (`~/.jarvis/watches.json`), and any alert that
+fires while no screen is open is spoken when one connects. Checks are always
+read-only, whatever `JARVIS_ALLOW_WRITES` says, and never use the camera.
+
+Each check costs a few cents on your account (about $0.07 on the default model
+at low effort), so a five-minute watch left running all day adds up; set
+`JARVIS_WATCH_MODEL` to a cheaper model if you keep many.
+
 ### JARVIS controls the interface
 
 He drives the UI through MCP tools the bridge exposes:
@@ -236,7 +263,13 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
-| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone` |
+| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `watch` |
+| `JARVIS_WATCH_MODEL` | `JARVIS_MODEL` | The model each background watch check runs on |
+| `JARVIS_WATCH_EFFORT` | `low` | Reasoning effort for a watch check |
+| `JARVIS_WATCH_BUDGET_USD` | `0.5` | Spending cap on a single watch check |
+| `JARVIS_WATCH_MIN_MINUTES` | `2` | The shortest interval any watch may use |
+| `JARVIS_WATCH_MAX` | `12` | How many watches may run at once |
+| `JARVIS_WATCH_FILE` | `~/.jarvis/watches.json` | Where watches are kept |
 | `JARVIS_DEVICES_FILE` | `~/.jarvis/devices.json` | Where paired phones are kept (token hashes only) |
 | `JARVIS_ALLOWED_ORIGINS` | local dev | Extra WebSocket origins to accept |
 | `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
@@ -419,6 +452,9 @@ The bridge's defences live in `bridge/server.mjs` and `bridge/policy.mjs`:
 - `JARVIS_DISABLE` removes browser control, the camera or the interface tools
   entirely, and `JARVIS_CLAUDE_EXECUTABLE` can run the agent inside a sandbox
   wrapper.
+- Background watch checks run with writes off and without the camera or the
+  interface tools, whatever the bridge's own write setting, and each has a
+  spending cap and a four-minute timeout.
 - A strict CSP in `index.html`; model-authored panel HTML is sanitised.
 
 ---

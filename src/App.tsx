@@ -26,6 +26,8 @@ import {
   watchCapture,
   watchUi,
   watchConnection,
+  watchAlerts,
+  type WatchAlert,
   connectedLabels,
   usingBridge,
   type Msg,
@@ -120,6 +122,50 @@ export default function App() {
     s.setPhase('listening')
     sfx.play('listen')
     idleTimer.current = setTimeout(goDormant, window)
+  }
+
+  // -- watches speaking up ------------------------------------------------
+
+  /**
+   * Alerts from standing watches, waiting for a gap.
+   *
+   * An alert is JARVIS volunteering something, so it never talks over him or
+   * over a question in flight: it waits until he is idle or merely listening,
+   * then speaks and leaves the mic open for the obvious follow-up ("how much
+   * is it now?"). Saying anything while it plays stops it, like any answer.
+   */
+  const alerts = useRef<WatchAlert[]>([])
+  const alertSub = useRef<(() => void) | null>(null)
+
+  const announceNext = () => {
+    const phase = store.getState().phase
+    if (phase !== 'dormant' && phase !== 'listening') return
+    const next = alerts.current.shift()
+    if (!next) return
+
+    clearIdle()
+    const mine = ++turn.current
+    const s = store.getState()
+    s.pushPanel({
+      id: `watch-${next.id}`,
+      title: next.kind === 'paused' ? 'WATCH PAUSED' : 'WATCH',
+      html: `<p>${next.message.replace(/[<>&]/g, (c) => `&#${c.charCodeAt(0)};`)}</p>`,
+      anim: 'snap',
+      slot: 'right',
+      accent: next.kind === 'paused' ? 'red' : 'amber',
+      hold: 'turn',
+    })
+    s.pushTurn({ id: newId(), role: 'jarvis', text: next.message })
+    s.setPhase('speaking')
+    sfx.play('wake')
+    const spk = createSpeaker()
+    speaker.current = spk
+    spk.say(next.message)
+    void spk.end().then(() => {
+      if (mine !== turn.current) return
+      speaker.current = null
+      listen(FOLLOW_UP_MS)
+    })
   }
 
   // -- one turn -------------------------------------------------------------
@@ -365,6 +411,17 @@ export default function App() {
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
+    watchAlerts((alert) => {
+      if (alerts.current.some((a) => a.id === alert.id)) return
+      alerts.current.push(alert)
+      announceNext()
+    })
+    // Held alerts go out the moment he is free again.
+    // Replaced rather than added to, since a failed boot runs this again.
+    alertSub.current?.()
+    alertSub.current = store.subscribe((st, prev) => {
+      if (st.phase !== prev.phase && alerts.current.length) announceNext()
+    })
 
     /**
      * JARVIS asking to see something.

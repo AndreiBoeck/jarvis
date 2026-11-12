@@ -43,6 +43,10 @@ export const READ_ONLY_BUILTINS = new Set([
   'ListMcpResources', 'ListMcpResourcesTool',
   'ReadMcpResource', 'ReadMcpResourceTool',
   'BashOutput', 'TaskOutput',
+  // How a run with an output schema hands back its answer (a watch check,
+  // see monitor.mjs). Denied, the model falls back to prose and the check
+  // fails on every pass.
+  'StructuredOutput',
 ])
 export const WRITE_BUILTINS = new Set([
   'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
@@ -157,6 +161,12 @@ export function decideTool(name, allowWrites = false) {
     // and the real gate is the browser's own camera permission plus an
     // indicator the user can see for as long as it is live.
     if (server === 'jarvis_eyes') return true
+
+    // Watches. Starting one only schedules looks: every check runs with
+    // writes off whatever this process allows (runWatchCheck in server.mjs),
+    // so nothing here can change the world. Named because `start` and `stop`
+    // read as writes to the verb rules below.
+    if (server === 'jarvis_watch') return true
 
     const tool = mcpToolOf(name)
 
