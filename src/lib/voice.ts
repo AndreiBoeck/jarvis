@@ -539,9 +539,10 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       }
     },
     onEnd: (blob) => {
-      // The app has no wake word — a tap starts a turn — so while he is
-      // dormant nothing said near the phone is worth sending anywhere.
-      if (IS_APP && h.mode() === 'wake') return
+      // In the app, "Hey Jarvis" works only while the app is on screen. Once
+      // it is in the background, nothing said near the phone is sent anywhere
+      // until a tap or a return to the app — no listening in a pocket.
+      if (IS_APP && h.mode() === 'wake' && document.visibilityState !== 'visible') return
       pendingAudio.push(blob)
       void drain()
     },

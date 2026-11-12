@@ -346,8 +346,9 @@ alarms, read notifications and the screen, tap and type, call and text.
 `npm run pair -- --list` shows paired phones and `npm run pair -- --revoke "Pixel"`
 unpairs one immediately. Only a hash of each token is stored.
 
-The app is the same interface as the desktop, with a talk button in place of
-the wake word — nothing listens while it is closed. What it adds is a quiet
+The app is the same interface as the desktop. "Hey Jarvis" works while the app
+is on screen, and there is a talk button too — nothing is listened to once it is
+in the background or closed. What it adds is a quiet
 background connection (`/device`) that starts no agent of its own, so JARVIS on
 the PC can reach the phone at any time; it can be switched off from the gear.
 

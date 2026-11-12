@@ -1,5 +1,8 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
+import { rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 /**
  * JARVIS's hands on the user's phone.
@@ -33,6 +36,27 @@ const device = z
   .catch(undefined)
   .describe('Which phone, by its paired name. Leave out to use the one connected most recently.')
 
+/**
+ * Phone screenshots written to disk, oldest first. Only the last few are
+ * kept: each is a picture of whatever was on the user's phone, and a temp
+ * folder full of them is a record nobody asked for.
+ */
+const KEEP_IMAGES = 10
+const savedImages = []
+
+function savePhoneImage(base64, mimeType) {
+  try {
+    const ext = mimeType === 'image/png' ? 'png' : 'jpg'
+    const path = join(tmpdir(), `jarvis-phone-${Date.now()}.${ext}`)
+    writeFileSync(path, Buffer.from(base64, 'base64'))
+    savedImages.push(path)
+    while (savedImages.length > KEEP_IMAGES) rmSync(savedImages.shift(), { force: true })
+    return path
+  } catch {
+    return null // the image still reaches the model; only the blade misses out
+  }
+}
+
 const text = (t) => ({ type: 'text', text: t })
 const fail = (t) => ({ isError: true, content: [text(t)] })
 
@@ -64,6 +88,15 @@ export function phoneServer(hub) {
     if (typeof reply.text === 'string' && reply.text) content.push(text(reply.text))
     if (reply.json !== undefined) content.push(text(JSON.stringify(reply.json)))
     if (typeof reply.data === 'string' && reply.data) {
+      // The model can see an image it is handed, but a blade can only show a
+      // file or a URL. Saved to disk as well, so "show me my phone screen"
+      // can put it on the display — the /file route serves the temp folder.
+      const path = savePhoneImage(reply.data, reply.mimeType)
+      if (path) {
+        content.push(
+          text(`Saved at ${path} — to show it, open a blade of kind "image" with this path as its url.`),
+        )
+      }
       content.push({ type: 'image', data: reply.data, mimeType: reply.mimeType ?? 'image/jpeg' })
     }
     if (!content.length) content.push(text('Done.'))

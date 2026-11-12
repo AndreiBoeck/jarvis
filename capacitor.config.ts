@@ -8,7 +8,8 @@ import type { CapacitorConfig } from '@capacitor/cli'
 const config: CapacitorConfig = {
   appId: 'app.jarvis.mobile',
   appName: 'JARVIS',
-  webDir: 'dist',
+  // The app's own build (npm run app), kept apart from the desktop's dist/.
+  webDir: 'dist-app',
   android: {
     // The interface is served from https://localhost inside the app, so the
     // microphone (a secure-context API) works and the bridge sees one fixed

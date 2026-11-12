@@ -65,9 +65,10 @@ if (!existsSync('android/local.properties') && sdk) {
   writeFileSync('android/local.properties', `sdk.dir=${sdk.replaceAll('\\', '/')}\n`)
 }
 
-run('npx', ['vite', 'build', '--mode', 'mobile'], { env })
+// Its own folder: dist/ is the desktop build, and the two must not overwrite each other.
+run('npx', ['vite', 'build', '--mode', 'mobile', '--outDir', 'dist-app'], { env })
 run('npx', ['cap', 'sync', 'android'], { env })
-run(win ? 'gradlew.bat' : './gradlew', ['assembleDebug', '--console=plain', '-q'], { cwd: 'android', env })
+run(win ? '.\\gradlew.bat' : './gradlew', ['assembleDebug', '--console=plain', '-q'], { cwd: 'android', env })
 
 const apk = 'android/app/build/outputs/apk/debug/app-debug.apk'
 console.log(`\n[app] built ${apk}`)
