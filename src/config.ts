@@ -107,7 +107,31 @@ export function saveLink(link: BridgeLink | null): void {
   else localStorage.removeItem(LINK_KEY)
 }
 
-const LINK = IS_APP ? readLink() : null
+/**
+ * Running inside the JARVIS app for macOS (macos/ in this repository).
+ *
+ * The app hosts this page in a WKWebView and announces itself before any of
+ * our code runs, by injecting `window.JarvisMac`. Unlike the phone, the Mac
+ * keeps the full desktop experience — wake word, full scene. What it changes
+ * is where the bridge is: in paired mode the app hands over the address and
+ * token of the PC at home (it keeps the token in the macOS Keychain, so the
+ * page never has to store it); in local mode it hands over nothing, and the
+ * page talks to the bridge on this same Mac exactly as a desktop browser does.
+ */
+type MacNative = { link?: { url?: unknown; token?: unknown } | null }
+const MAC = (globalThis as { JarvisMac?: MacNative }).JarvisMac
+export const IS_MAC_APP: boolean = Boolean(MAC)
+
+function macLink(): BridgeLink | null {
+  const url = MAC?.link?.url
+  const token = MAC?.link?.token
+  return typeof url === 'string' && typeof token === 'string' && url && token ? { url, token } : null
+}
+
+const LINK = IS_APP ? readLink() : macLink()
+
+/** Reaching a bridge on another machine with a pairing token: the phone app, or the Mac app paired to the PC. */
+export const IS_REMOTE: boolean = Boolean(LINK)
 
 export const BRIDGE_WS_URL =
   LINK?.url ?? str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://localhost:8787'

@@ -33,7 +33,9 @@ function appCsp(bridgeUrl: string | undefined): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   return {
-    plugins: [react(), ...(mode === 'mobile' ? [appCsp(env.VITE_BRIDGE_URL)] : [])],
+    // The Mac app's paired build (`npm run mac`) reaches the bridge the same
+    // way the phone does, so it gets the same policy.
+    plugins: [react(), ...(mode === 'mobile' || mode === 'mac' ? [appCsp(env.VITE_BRIDGE_URL)] : [])],
     server: {
       // Honour PORT so a second instance can run alongside the first. The bridge
       // only accepts sockets from localhost:5173-5199, so stay inside that range
