@@ -9,7 +9,7 @@ import react from '@vitejs/plugin-react'
  * unchanged: the phone still only ever loads bytes from its own bridge.
  *
  * The bridge address is baked in from VITE_BRIDGE_URL when known (that is what
- * `npm run app` passes); without it, any *.ts.net host is allowed, so pairing
+ * `npm run app` in jarvis-android passes); without it, any *.ts.net host is allowed, so pairing
  * with an address typed by hand still shows pictures.
  */
 function appCsp(bridgeUrl: string | undefined): Plugin {
@@ -33,7 +33,7 @@ function appCsp(bridgeUrl: string | undefined): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   return {
-    // The Mac app's paired build (`npm run mac`) reaches the bridge the same
+    // The Mac app's paired build (`npm run mac` in jarvis-mac) reaches the bridge the same
     // way the phone does, so it gets the same policy.
     plugins: [react(), ...(mode === 'mobile' || mode === 'mac' ? [appCsp(env.VITE_BRIDGE_URL)] : [])],
     server: {

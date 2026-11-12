@@ -1,7 +1,7 @@
 import { registerPlugin } from '@capacitor/core'
 
 /**
- * The native half of the Android app (android/.../JarvisDevicePlugin.java).
+ * The native half of the Android app (JarvisDevicePlugin.java, in the jarvis-android repository).
  *
  * The interface is the same web page as on the desktop; what only a native app
  * can do lives behind this plugin: the background link that lets the PC drive

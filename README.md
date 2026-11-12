@@ -388,11 +388,17 @@ alarms, read notifications and the screen, tap and type, call and text.
    npm run pair -- "Pixel"
    ```
 
-4. Build the Android app and install it (needs Android Studio, for its JDK and
-   SDK). `--install` puts it on a phone connected by USB; otherwise copy the APK
-   it prints to the phone:
+4. Build the Android app and install it. The app lives in its own repository,
+   [jarvis-android](https://github.com/AndreiBoeck/jarvis-android), which takes
+   this one as a submodule — so the interface and the bridge it talks to are
+   always these, and a change here reaches the app on its next build. Needs
+   Android Studio, for its JDK and SDK. `--install` puts it on a phone connected
+   by USB; otherwise copy the APK it prints to the phone:
 
    ```bash
+   git clone --recurse-submodules https://github.com/AndreiBoeck/jarvis-android.git
+   cd jarvis-android
+   npm run setup
    npm run app -- --install
    ```
 
@@ -420,8 +426,10 @@ is in front.
 
 ## Your MacBook
 
-The JARVIS app for macOS (`macos/`, native Swift) works two ways — pick one in
-its **Configurações** window, and switch whenever you like:
+The JARVIS app for macOS (native Swift) lives in its own repository,
+[jarvis-mac](https://github.com/AndreiBoeck/jarvis-mac), which takes this one as
+a submodule. It works two ways — pick one in its **Configurações** window, and
+switch whenever you like:
 
 - **Paired with the PC** — exactly like the phone. The Mac shows the JARVIS
   interface (wake word and the full scene included) and links to the bridge on
@@ -440,9 +448,14 @@ and — confirmed on the Mac first — run your Shortcuts and send iMessages.
 Build it on the Mac (needs the Xcode command line tools: `xcode-select --install`):
 
 ```bash
-npm install
+git clone --recurse-submodules https://github.com/AndreiBoeck/jarvis-mac.git
+cd jarvis-mac
+npm run setup
 npm run mac -- --install     # builds JARVIS.app and copies it to /Applications
 ```
+
+In local mode the app runs the bridge from the `jarvis` submodule inside that
+checkout.
 
 Set `JARVIS_BRIDGE_URL=wss://your-pc.your-tailnet.ts.net` while building to
 pre-fill the PC's address. For paired mode, on the PC (with

@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='utf-8'?>
-<resources>
-    <string name="app_name">JARVIS</string>
-    <string name="title_activity_main">JARVIS</string>
-    <string name="package_name">app.jarvis.mobile</string>
-    <string name="custom_url_scheme">app.jarvis.mobile</string>
-    <string name="accessibility_description">Permite que o seu Jarvis leia a tela, toque e digite quando você pedir. Apps de banco, carteiras e autenticadores nunca são lidos nem tocados.</string>
-</resources>

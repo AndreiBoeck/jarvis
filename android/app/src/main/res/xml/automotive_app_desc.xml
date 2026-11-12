@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
-  What JARVIS uses in Android Auto: a templated screen (the car app) and
-  notifications (the message conversation, read aloud and answered by voice).
--->
-<automotiveApp>
-    <uses name="template" />
-    <uses name="notification" />
-</automotiveApp>

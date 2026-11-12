@@ -5,7 +5,7 @@ import { deviceRelay, text } from './phone.mjs'
 /**
  * JARVIS's hands on the user's Mac.
  *
- * The Mac runs the JARVIS app (macos/ in this repository), which keeps one
+ * The Mac runs the JARVIS app (the jarvis-mac repository), which keeps one
  * quiet socket open to this bridge — the same /device link and the same
  * protocol as the phone app, so DeviceHub carries both. Each tool here is a
  * command sent down that socket; the app carries it out with macOS's own APIs —

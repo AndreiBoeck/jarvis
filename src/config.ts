@@ -108,7 +108,7 @@ export function saveLink(link: BridgeLink | null): void {
 }
 
 /**
- * Running inside the JARVIS app for macOS (macos/ in this repository).
+ * Running inside the JARVIS app for macOS (the jarvis-mac repository).
  *
  * The app hosts this page in a WKWebView and announces itself before any of
  * our code runs, by injecting `window.JarvisMac`. Unlike the phone, the Mac
