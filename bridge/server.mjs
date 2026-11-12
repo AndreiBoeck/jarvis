@@ -32,6 +32,7 @@ import {
   watchServer,
 } from './monitor.mjs'
 import { Caller, callServer, maskNumber } from './calls.mjs'
+import { askCodex, looksLikeLimit, CODEX_ENABLED } from './codex.mjs'
 import {
   DeviceHub,
   MEDIA_ROUTES,
@@ -462,6 +463,8 @@ const PROMPT_INTERFACE = `The interface itself:
   subject moves on.
 - Put it back. A colour that outlives the moment that earned it is a fault.
 - Never mention that you have done any of it. They are looking at the screen.
+- When they tell you to rest, sleep or stand by, in any language or wording,
+  call \`ui_rest\` at once and say nothing at all.
 
 `
 const PROMPT_BROWSER = `Their browser — ALWAYS the \`chrome_*\` tools, first, for anything to do with a
@@ -620,6 +623,89 @@ const SYSTEM_PROMPT = [
   CALLS_AVAILABLE ? PROMPT_CALL : '',
   PROMPT_TOOLS,
 ].join('')
+
+/**
+ * Claude out of usage, and until when.
+ *
+ * Shared by every connection: the limit belongs to the account, not the socket.
+ * While it stands, questions go straight to Codex rather than costing a failed
+ * Claude turn first. Capped at an hour even when the reset is days away, so
+ * extra usage bought in the meantime is noticed within the hour.
+ */
+let claudeOutUntil = 0
+const CLAUDE_RETRY_MS = 15 * 60_000
+const CLAUDE_MAX_WAIT_MS = 60 * 60_000
+
+function claudeOut(resetsAt) {
+  const now = Date.now()
+  let until = now + CLAUDE_RETRY_MS
+  if (resetsAt) {
+    const ms = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt
+    if (ms > now) until = Math.min(ms, now + CLAUDE_MAX_WAIT_MS)
+  }
+  if (until > claudeOutUntil) {
+    claudeOutUntil = until
+    console.log(
+      `[jarvis] Claude is out of usage — Codex answers until ${new Date(until).toLocaleTimeString()}`,
+    )
+  }
+}
+/** JARVIS_BRAIN=codex sends everything to the reserve, to rehearse it. */
+const FORCE_CODEX = process.env.JARVIS_BRAIN === 'codex'
+const claudeAvailable = () => !FORCE_CODEX && Date.now() >= claudeOutUntil
+
+/** The persona for the reserve brain, without the tools it does not have. */
+const CODEX_SYSTEM =
+  PROMPT_CORE +
+  `You are answering through your reserve systems: the main ones are out of
+capacity for now. You have no blades, no interface controls, no camera, phone or
+Mac here — only what this environment gives you, including web search. Answer
+by voice, in the same register and length as always. Do not mention the reserve
+systems unless asked why something you normally do is unavailable.
+Never write or change files and never run commands that change anything.`
+
+/**
+ * The start-up briefing, asked for by the interface once it has booted on the
+ * PC or the Mac. Built here rather than in the browser so the location, the
+ * clock and the switch live with the rest of the configuration.
+ */
+const BRIEFING_ON = process.env.JARVIS_BRIEFING !== '0'
+const BRIEFING_LOCATION = process.env.JARVIS_LOCATION?.trim() || ''
+
+function briefingPrompt(kind) {
+  const when = new Date().toLocaleString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  const where = BRIEFING_LOCATION ? `in ${BRIEFING_LOCATION}` : 'where they are'
+  return `[Start-up briefing. This message comes from the JARVIS system, not from the user.]
+It is ${when}. JARVIS has just been switched on${kind === 'mac' ? ' on the MacBook' : ''}. Brief the user.
+
+1. Mail. Find the most important emails in their inbox from roughly the last day:
+   unread first; what matters is mail from real people, anything that needs an
+   answer or a decision, deadlines, money, contracts, and mail from their own
+   company. Skip newsletters, promotions and automatic notifications. Use a mail
+   connector's search if you have one; otherwise read Gmail through the chrome_*
+   tools. At most five. Open EACH one on its own blade with \`display\`, hold
+   "sticky": who it is from, the subject, when it arrived, and three or four lines
+   on what it says and what it asks of them.
+2. Then one more blade with \`display\`, hold "sticky", slot "wide", titled "TODAY":
+   the weather ${where} now and for the rest of the day (temperature, high and low,
+   chance of rain; use the clima tools, geocoding first), today's calendar events
+   if you can read their calendar, and anything else worth knowing this morning.
+3. Speak: one short greeting for the time of day; then each important email in one
+   sentence, who it is from and what they want; then the weather in one sentence.
+   Reading the mail out is the point of this briefing, so the length is licensed,
+   but never read a blade word for word.
+
+Say nothing at all until every blade is up: no preamble, no "I'll pull the mail
+together". If the mail or the weather cannot be reached at all, say so in one
+short clause; otherwise never mention connectors, tools, permissions or how you
+got anything. Do not end with a question.`
+}
 
 /**
  * ElevenLabs credentials, borrowed from the MCP server config.
@@ -1651,6 +1737,55 @@ wss.on('connection', (socket, req) => {
   const sendTurn = (msg) => send({ ...msg, ask: answering })
 
   /**
+   * The reserve brain's side of the conversation.
+   *
+   * `question` is what the turn in flight was asked, kept so a turn that Claude
+   * refuses for lack of usage can be handed to Codex whole. `transcript` is a
+   * short record of the exchange in plain text, since Codex starts every
+   * question from nothing and the Claude session's memory is out of reach.
+   */
+  let question = ''
+  let questionLabel = ''
+  let turnLimited = false
+  let codexRun = null
+  const transcript = []
+  const remember = (asked, answer) => {
+    transcript.push({ role: 'user', text: asked }, { role: 'jarvis', text: answer || '…' })
+    if (transcript.length > 24) transcript.splice(0, transcript.length - 24)
+  }
+
+  const answerWithCodex = async (asked, askId, label) => {
+    codexRun?.abort()
+    const ac = new AbortController()
+    codexRun = ac
+    const tag = (m) => send({ ...m, ask: askId })
+    console.log('[jarvis] answering with Codex')
+    tag({ type: 'tool', name: 'codex' })
+    try {
+      const text = await askCodex({
+        system: CODEX_SYSTEM,
+        history: transcript.slice(-12),
+        question: asked,
+        cwd: WORKSPACE,
+        signal: ac.signal,
+        onText: (delta) => tag({ type: 'text', delta }),
+        onTool: (name) => tag({ type: 'tool', name }),
+      })
+      remember(label || asked, text)
+      tag({ type: 'done', text, costUsd: null })
+    } catch (err) {
+      if (ac.signal.aborted) return console.log('[jarvis] codex turn interrupted')
+      console.error('[jarvis] codex failed:', err?.message ?? err)
+      tag({
+        type: 'error',
+        message: `Claude is out of usage, and Codex could not answer either: ${err?.message ?? err}`,
+      })
+    } finally {
+      if (codexRun === ac) codexRun = null
+    }
+  }
+
+  /**
    * Asking the browser for something and waiting for the answer.
    *
    * Every other tool here pushes — a panel, a blade, a retint — and never needs
@@ -1931,7 +2066,23 @@ wss.on('connection', (socket, req) => {
             break
           }
 
+          case 'rate_limit_event': {
+            // The account's usage window closed. Overage that is allowed
+            // keeps Claude answering, so only a flat refusal counts.
+            const info = msg.rate_limit_info ?? {}
+            const overage = info.overageStatus === 'allowed' || info.overageStatus === 'allowed_warning'
+            if (info.status === 'rejected' && !overage) {
+              claudeOut(info.resetsAt)
+              turnLimited = true
+            }
+            break
+          }
+
           case 'assistant': {
+            if (msg.error === 'rate_limit' || msg.error === 'billing_error') {
+              claudeOut()
+              turnLimited = true
+            }
             // Fallback for builds that emit whole assistant messages rather
             // than partial events. Deduped against the stream_event path.
             for (const block of msg.content ?? msg.message?.content ?? []) {
@@ -1956,13 +2107,26 @@ wss.on('connection', (socket, req) => {
             break
           }
 
-          case 'result':
+          case 'result': {
+            // Out of usage: the CLI reports it as a "successful" turn whose
+            // text is the limit notice, or as an error. Either way the question
+            // goes to Codex rather than the notice being spoken as the answer.
+            const limited =
+              turnLimited ||
+              (msg.is_error &&
+                looksLikeLimit(`${msg.result ?? ''} ${(msg.errors ?? []).join(' ')}`))
+            turnLimited = false
+            const cancelled = cancelledAsk !== null && cancelledAsk === answering
+            if (limited && CODEX_ENABLED && !cancelled) {
+              claudeOut()
+              void answerWithCodex(question, answering, questionLabel)
             // A result is not automatically a success. The error subtypes
             // carry no `result` field at all, so reporting them as 'done' with
             // empty text is indistinguishable from a turn that simply had
             // nothing to say — the HUD stops spinning and JARVIS stands there
             // silent. Say what happened instead.
-            if (msg.subtype === 'success') {
+            } else if (msg.subtype === 'success') {
+              remember(questionLabel || question, msg.result ?? '')
               sendTurn({
                 type: 'done',
                 text: msg.result ?? '',
@@ -1995,6 +2159,7 @@ wss.on('connection', (socket, req) => {
             seenTools.clear()
             heldTools.clear()
             break
+          }
 
           case 'system':
             if (msg.subtype === 'init') {
@@ -2045,10 +2210,25 @@ wss.on('connection', (socket, req) => {
        * Waiting costs nothing when nothing is interrupting — the chain is an
        * already-resolved promise — and removes the cross-talk when there is.
        */
-      const text = msg.text
+      const briefing = msg.kind === 'briefing'
       const id = typeof msg.id === 'string' ? msg.id : null
+      // The start-up briefing belongs to the PC and the Mac. Anywhere else, or
+      // switched off, it is answered with nothing at once.
+      if (briefing && (!BRIEFING_ON || (screenKind !== 'pc' && screenKind !== 'mac'))) {
+        send({ type: 'done', text: '', costUsd: null, ask: id })
+        return
+      }
+      const text = briefing ? briefingPrompt(screenKind) : msg.text
       void settling.then(() => {
         answering = id
+        question = text
+        questionLabel = briefing ? '(start-up briefing)' : ''
+        turnLimited = false
+        // Known to be out: straight to the reserve, no failed turn first.
+        if (CODEX_ENABLED && !claudeAvailable()) {
+          void answerWithCodex(text, id, questionLabel)
+          return
+        }
         if (deliver) {
           const resolve = deliver
           deliver = null
@@ -2069,6 +2249,9 @@ wss.on('connection', (socket, req) => {
     }
 
     if (msg.type === 'interrupt') {
+      // A Codex answer in flight stops with it, process and all.
+      codexRun?.abort()
+      codexRun = null
       // Marks the turn in flight as cancelled on purpose, so the failed result
       // it is about to produce is not reported as a fault.
       cancelledAsk = answering
@@ -2090,6 +2273,7 @@ wss.on('connection', (socket, req) => {
     interfaces.delete(send)
     if (mediaKey) dropMediaKey(mediaKey)
     screens.delete(screenId)
+    codexRun?.abort()
     closed = true
     deliver?.(null)
     session.close?.()

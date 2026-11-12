@@ -34,6 +34,19 @@ export async function ask(
     : direct.ask([...history, { role: 'user', content: prompt }], handlers)
 }
 
+/**
+ * The start-up briefing: the most important mail, each on its own blade, and a
+ * blade with the weather and the day. The bridge writes the question itself —
+ * and answers with nothing on the phone, or when it is switched off — so the
+ * direct path, which has no mail or blades to offer, simply skips it.
+ */
+export async function brief(
+  handlers: AskHandlers,
+): Promise<{ text: string; tools: string[] }> {
+  if (!usingBridge) return { text: '', tools: [] }
+  return bridge.ask('', handlers, 'briefing')
+}
+
 export async function warm(): Promise<void> {
   if (usingBridge) await bridge.warmBridge()
 }

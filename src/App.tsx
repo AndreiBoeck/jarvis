@@ -18,6 +18,8 @@ import { TalkButton } from './ui/Mobile'
 import { forTool, attention } from './lib/fillers'
 import {
   ask,
+  brief,
+  type AskHandlers,
   warm,
   interrupt,
   watchServers,
@@ -35,6 +37,7 @@ import {
 import { startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { env } from './config'
+import { isRestOrder } from './lib/rest'
 
 /**
  * The conversation.
@@ -114,6 +117,21 @@ export default function App() {
     s.setPhase('dormant')
   }
 
+  /**
+   * Rest, now. Whatever he was doing stops — the answer in flight is abandoned
+   * on the bridge too, so it does not go on spending tokens on something nobody
+   * will hear — and he drops to standby until his name is said again.
+   */
+  const rest = () => {
+    const phase = store.getState().phase
+    if (phase === 'offline' || phase === 'boot') return
+    if (phase === 'thinking' || phase === 'tooling' || phase === 'speaking') {
+      interrupt()
+    }
+    goDormant()
+    sfx.play('done')
+  }
+
   /** Open the mic and wait. `window` is how long before he gives up. */
   const listen = (window: number) => {
     clearIdle()
@@ -170,7 +188,9 @@ export default function App() {
 
   // -- one turn -------------------------------------------------------------
 
-  const respond = async (said: string): Promise<void> => {
+  /** `briefing` is the start-up briefing: nobody said anything, so there is
+   *  no user line, and the bridge writes the question itself. */
+  const respond = async (said: string, briefing = false): Promise<void> => {
     const mine = ++turn.current
     const stale = () => mine !== turn.current
 
@@ -181,7 +201,7 @@ export default function App() {
     s.clearPanels()
     s.clearBlades()
     s.setCaption('')
-    s.pushTurn({ id: newId(), role: 'user', text: said })
+    if (!briefing) s.pushTurn({ id: newId(), role: 'user', text: said })
     s.setPhase('thinking')
 
     const spk = createSpeaker()
@@ -194,7 +214,7 @@ export default function App() {
     let filled = false
 
     try {
-      const { text } = await ask(said, history.current, {
+      const handlers: AskHandlers = {
         onText: (delta) => {
           if (stale()) return
           if (!started) {
@@ -227,13 +247,16 @@ export default function App() {
             spk.say(forTool(name))
           }
         },
-      })
+      }
+      const { text } = briefing
+        ? await brief(handlers)
+        : await ask(said, history.current, handlers)
 
       if (stale()) return
 
       // The bridge keeps conversation state in its own session, so history is
       // only threaded through on the direct path.
-      if (!usingBridge) {
+      if (!usingBridge && !briefing) {
         history.current.push({ role: 'user', content: said })
         history.current.push({ role: 'assistant', content: text || '…' })
         if (history.current.length > 16) {
@@ -293,6 +316,7 @@ export default function App() {
     // "Jarvis, what's happening in AI this week" in one breath. Waiting for a
     // greeting he didn't need is the most common way an assistant wastes time.
     if (trailing) {
+      if (isRestOrder(trailing)) return rest()
       void respond(trailing)
       return
     }
@@ -351,6 +375,8 @@ export default function App() {
       listen(AWAIT_SPEECH_MS)
       return
     }
+
+    if (isRestOrder(said)) return rest()
 
     void respond(said)
   }
@@ -503,6 +529,10 @@ export default function App() {
         case 'screen':
           s.clearScreen(a.what ?? 'all')
           break
+        case 'rest':
+          // The model recognised an order to rest that isRestOrder did not.
+          rest()
+          break
         default:
           console.warn('[jarvis] unknown ui op:', op, args)
       }
@@ -585,6 +615,12 @@ export default function App() {
     })
 
     store.getState().setPhase('dormant')
+
+    // The start-up briefing — the mail that matters, each on its own blade,
+    // and the weather and the day on one more — read out the moment he is up.
+    // The PC and the Mac only; the bridge answers the phone with nothing. Saying
+    // anything cuts it off, like any answer, and "descansa" ends it outright.
+    if (usingBridge && !IS_APP) void respond('', true)
   }
 
   // -- clap to start --------------------------------------------------------

@@ -301,6 +301,13 @@ At most one per turn, and only when something actually happened. An effect on
 every answer is punctuation, and punctuation stops meaning anything by the third
 sentence. Silence on the screen is the default, exactly as it is in your speech.`
 
+const REST_DESCRIPTION = `Go to rest: stop talking and drop to standby at once.
+
+Call this the moment the user tells you to rest, sleep, stand by, stand down or
+that they are done with you — in any language and any wording ("descansa",
+"pode ir dormir", "entra em repouso", "that will be all"). Call it FIRST, say
+nothing before or after it: the interface stops your voice as soon as it runs.`
+
 const SCREEN_DESCRIPTION = `Clear the display.
 
   panels     = take down every card, including the sticky ones.
@@ -488,6 +495,11 @@ export function uiServer(emit) {
       tool('ui_reset', RESET_DESCRIPTION, {}, async () => {
         emit('reset', {})
         return ok('Interface restored.')
+      }),
+
+      tool('ui_rest', REST_DESCRIPTION, {}, async () => {
+        emit('rest', {})
+        return ok('Resting. Say nothing more.')
       }),
     ],
   })
