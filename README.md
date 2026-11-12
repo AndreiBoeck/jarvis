@@ -449,7 +449,7 @@ pre-fill the PC's address. For paired mode, on the PC (with
 `tailscale serve --bg 8787` already set up, as for the phone):
 
 ```bash
-npm run pair -- --mac "MacBook"
+npm run pair:mac "MacBook"
 ```
 
 Paste the token into Configurações and click **Salvar e conectar**. Local mode

@@ -96,7 +96,7 @@ struct SettingsView: View {
             .textFieldStyle(.roundedBorder)
         SecureField(settings.pairedToken == nil ? "Token (jv_…)" : "Token salvo — cole outro para trocar", text: $token)
             .textFieldStyle(.roundedBorder)
-        Text("No PC, rode  npm run pair -- --mac \"MacBook\"  e cole aqui o token que aparecer.")
+        Text("No PC, rode  npm run pair:mac \"MacBook\"  e cole aqui o token que aparecer.")
             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
     }
 
@@ -179,7 +179,7 @@ enum Pairing {
             let problem: String?
             switch code {
             case 200: problem = nil
-            case 401, 403: problem = "O JARVIS recusou este token. Gere outro no PC com npm run pair -- --mac \"MacBook\"."
+            case 401, 403: problem = "O JARVIS recusou este token. Gere outro no PC com npm run pair:mac \"MacBook\"."
             case 0:
                 let detail = err.map { " (\($0.localizedDescription))" } ?? ""
                 problem = "Não consegui chegar ao PC. Confira se o Tailscale está ligado neste Mac e se a ponte está rodando no PC (e o tailscale serve)." + detail

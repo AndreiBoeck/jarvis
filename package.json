@@ -19,6 +19,7 @@
     "bridge:writes": "node bridge/server.mjs --writes",
     "setup": "node scripts/setup.mjs",
     "pair": "node scripts/pair.mjs",
+    "pair:mac": "node scripts/pair.mjs --mac",
     "app": "node scripts/app.mjs",
     "mac": "node scripts/mac.mjs"
   },

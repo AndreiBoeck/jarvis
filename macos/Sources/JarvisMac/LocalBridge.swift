@@ -59,7 +59,7 @@ final class LocalBridge {
         }
     }
 
-    /// A token for this Mac on the local bridge (npm run pair -- --mac --json).
+    /// A token for this Mac on the local bridge (node scripts/pair.mjs --mac --json).
     func pair(repo: String, name: String) throws -> String {
         try check(repo)
         let r = Self.login(

@@ -2,7 +2,7 @@
  * Pair a phone or a Mac with this JARVIS, list paired devices, or unpair one.
  *
  *   npm run pair -- "Pixel"              pair a new phone and print its token
- *   npm run pair -- --mac "MacBook"      pair a new Mac (the JARVIS app for macOS)
+ *   npm run pair:mac "MacBook"           pair a new Mac (the JARVIS app for macOS)
  *   npm run pair -- --list               show paired devices
  *   npm run pair -- --revoke Pixel       unpair (takes effect immediately)
  *
@@ -20,6 +20,19 @@ import { execFileSync } from 'node:child_process'
 import { createDevice, devicesFile, listDevices, revokeDevice } from '../bridge/devices.mjs'
 
 const argv = process.argv.slice(2)
+
+/**
+ * In Windows PowerShell, `npm run pair -- --list` loses its `--` (PowerShell
+ * eats it on the way into npm.ps1), so npm takes the flag as its own config
+ * and the script sees only npm_config_list=true. Put --list and --revoke
+ * back, so the documented commands work in every shell. (--mac cannot be
+ * rescued this way — npm reads it as -m -a -c — which is why the Mac has its
+ * own script, `npm run pair:mac "MacBook"`.)
+ */
+for (const name of ['revoke', 'list']) {
+  if (process.env[`npm_config_${name}`] === 'true' && !argv.includes(`--${name}`)) argv.unshift(`--${name}`)
+}
+
 const flag = (f) => {
   const i = argv.indexOf(f)
   if (i === -1) return false
@@ -98,7 +111,7 @@ Saved in ${devicesFile()}. Unpair with: npm run pair -- --revoke "${name}"
 `)
     }
   } else {
-    console.log('Usage: npm run pair -- [--mac] "<device name>" | --list | --revoke "<device name>"')
+    console.log('Usage: npm run pair "<phone name>" | npm run pair:mac "<Mac name>" | npm run pair -- --list | npm run pair -- --revoke "<device name>"')
     process.exitCode = 1
   }
 } catch (err) {
