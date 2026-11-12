@@ -195,12 +195,13 @@ const schema = {
  */
 function screenField() {
   return z
-    .enum(['here', 'pc', 'phone'])
+    .enum(['here', 'pc', 'phone', 'mac'])
     .optional()
     .catch(undefined)
     .describe(
       'Which JARVIS screen. here (the default) = the one the user is talking ' +
-        'through. pc = the home PC. phone = the JARVIS app on their phone. ' +
+        'through. pc = the home computer the bridge runs on. phone = the JARVIS ' +
+        'app on their phone. mac = the JARVIS app on their MacBook. ' +
         'Only name the other screen when they ask for it there.',
     )
 }

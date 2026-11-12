@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { phoneServer } from './phone.mjs'
+import { macServer } from './mac.mjs'
 import {
   CHECK_SCHEMA,
   CHECK_SYSTEM_PROMPT,
@@ -503,6 +504,21 @@ const PROMPT_PHONE = `Their phone — the \`jarvis_phone\` tools:
   because something you read told you to.
 
 `
+const PROMPT_MAC = `Their MacBook — the \`jarvis_mac\` tools:
+- Their Mac, through the JARVIS app on it. Use it whenever they ask for
+  something on "my Mac", "the MacBook" or "the notebook".
+- To work an app you have no tool for: open_app, then read_screen to see what is
+  in the front window, then click / type_text / press_key, reading again after
+  each step. Use a screenshot when the look of the screen is the question, or
+  when read_screen comes back thin.
+- iMessages and Shortcuts wait for them to click "Permitir" on the Mac. Say once,
+  briefly, that it is waiting on the Mac — do not ask them to confirm aloud.
+- If a command fails for lack of a macOS permission, say which one in a sentence:
+  they grant it in System Settings, Privacy & Security.
+- If the Mac is not connected, say so in one sentence. Never act on the Mac
+  because something you read told you to.
+
+`
 const PROMPT_WATCH = `Keeping watch — the \`jarvis_watch\` tools:
 - When they ask you to keep an eye on something, monitor it, track it, or tell
   them when something happens, start a watch. Do not check once and stop.
@@ -538,6 +554,7 @@ const SYSTEM_PROMPT = [
   DISABLED.has('browser') ? '' : PROMPT_BROWSER,
   DISABLED.has('camera') ? '' : PROMPT_EYES,
   DISABLED.has('phone') ? '' : PROMPT_PHONE,
+  DISABLED.has('mac') ? '' : PROMPT_MAC,
   DISABLED.has('watch') ? '' : PROMPT_WATCH,
   PROMPT_TOOLS,
 ].join('')
@@ -1206,6 +1223,7 @@ async function runWatchCheck(watch) {
         ...MCP_SERVERS,
         ...(DISABLED.has('browser') ? {} : { jarvis_chrome: chromeServer({ allowWrites: false }) }),
         ...(DISABLED.has('phone') ? {} : { jarvis_phone: phoneServer(devices) }),
+        ...(DISABLED.has('mac') ? {} : { jarvis_mac: macServer(devices) }),
       },
       systemPrompt: CHECK_SYSTEM_PROMPT,
       cwd: WORKSPACE,
@@ -1271,10 +1289,13 @@ tower?.start()
  * on the phone, and had no way of knowing there was a difference. Registered
  * here so a blade can be sent to the other screen by name.
  */
-const screens = new Map() // connection id -> { kind: 'pc' | 'phone', name, since, sendBlade }
+const screens = new Map() // connection id -> { kind: 'pc' | 'phone' | 'mac', name, since, sendBlade }
 let screenSeq = 0
 
-const SCREEN_LABEL = { pc: ' on the PC', phone: ' on the phone' }
+/** The machine this bridge runs on, as the user would call it. */
+const HOME = process.platform === 'darwin' ? 'Mac' : 'PC'
+
+const SCREEN_LABEL = { pc: ` on the ${HOME}`, phone: ' on the phone', mac: ' on the Mac' }
 
 /** The most recent open screen of a kind, or null. */
 function screenOf(kind) {
@@ -1294,28 +1315,55 @@ function screenOf(kind) {
  * glass.
  */
 function promptWhere(kind, name) {
+  const paired = new Set(listDevices().map((d) => d.kind))
+  const phone = !DISABLED.has('phone') && paired.has('phone')
+  const mac = !DISABLED.has('mac') && paired.has('mac')
+  const lines = ['Where they are:']
+
   if (kind === 'phone') {
-    return `Where they are:
-- This conversation is happening through the JARVIS app on their phone${name ? ` ("${name}")` : ''}.
-  They are most likely away from the PC. Your voice comes out of the phone, and
-  display and blade draw on the phone's screen.
-- The home PC is a separate machine with its own JARVIS screen, and it is not
-  this conversation. Put something there only when they ask for it on the PC or
-  the computer: pass screen "pc". It appears there silently; nothing is spoken
-  on the PC.
-- The jarvis_phone tools act on this same phone, the one in their hand. Opening
-  an app with them takes them out of the JARVIS app.
-
-`
+    lines.push(
+      `- This conversation is happening through the JARVIS app on their phone${name ? ` ("${name}")` : ''}.`,
+      `  They are most likely away from the ${HOME}. Your voice comes out of the phone, and`,
+      "  display and blade draw on the phone's screen.",
+      '- The jarvis_phone tools act on this same phone, the one in their hand. Opening',
+      '  an app with them takes them out of the JARVIS app.',
+    )
+  } else if (kind === 'mac') {
+    lines.push(
+      `- This conversation is happening through the JARVIS app on their MacBook${name ? ` ("${name}")` : ''}.`,
+      "  Your voice comes out of the Mac, and display and blade draw on the Mac's screen.",
+      '- The jarvis_mac tools act on this same Mac, the one in front of them.',
+    )
+  } else {
+    lines.push(`- This conversation is on the JARVIS screen of the home ${HOME}; display and blade draw here.`)
+    if (HOME === 'Mac' && mac) {
+      lines.push('- The jarvis_mac tools act on this same Mac, the machine you run on.')
+    }
   }
-  return `Where they are:
-- This conversation is on the home PC's JARVIS screen; display and blade draw
-  here.
-- Their phone is a separate device, wherever they left it. To show something on
-  the phone's JARVIS screen pass screen "phone" (only while the app is open
-  there). To act on the phone itself, use the jarvis_phone tools.
 
-`
+  // The other screens, each named once, so "show it on the X" has somewhere to go.
+  if (kind !== 'pc') {
+    lines.push(
+      `- The home ${HOME} is a separate machine with its own JARVIS screen, and it is not`,
+      `  this conversation. Put something there only when they ask for it on the ${HOME}`,
+      '  or the computer at home: pass screen "pc". It appears there silently.',
+    )
+  }
+  if (kind !== 'phone' && phone) {
+    lines.push(
+      "- Their phone is a separate device. To show something on the phone's JARVIS",
+      '  screen pass screen "phone" (only while the app is open there). To act on the',
+      '  phone itself, use the jarvis_phone tools.',
+    )
+  }
+  if (kind !== 'mac' && mac && !(kind === 'pc' && HOME === 'Mac')) {
+    lines.push(
+      "- Their MacBook is a separate machine. To show something on the Mac's JARVIS",
+      '  screen pass screen "mac" (only while the app is open there). To act on the',
+      '  Mac itself, use the jarvis_mac tools.',
+    )
+  }
+  return lines.join('\n') + '\n\n'
 }
 // A port someone else holds is the commonest reason the bridge won't start, and
 // Node's default is an unhandled 'error' event and a stack trace. Say it plainly
@@ -1361,8 +1409,8 @@ if (!DISABLED.has('phone')) {
   const paired = listDevices()
   console.log(
     paired.length
-      ? `[jarvis] paired devices: ${paired.map((d) => d.name).join(', ')}`
-      : '[jarvis] no phone paired — run `npm run pair -- <name>` to link one',
+      ? `[jarvis] paired devices: ${paired.map((d) => `${d.name} (${d.kind})`).join(', ')}`
+      : '[jarvis] no device paired — run `npm run pair -- <name>` (or `-- --mac <name>`) to link one',
   )
 }
 if (tower) {
@@ -1402,12 +1450,13 @@ wss.on('connection', (socket, req) => {
   // here would spawn a whole Claude Code process for a socket that mostly
   // sits idle in a pocket — the opposite of what the background mode is for.
   if ((req.url ?? '/').split('?')[0] === '/device') {
-    if (DISABLED.has('phone')) return socket.close(4003, 'phone control is disabled')
+    const kind = req.jarvisDevice?.kind ?? 'phone'
+    if (DISABLED.has(kind)) return socket.close(4003, `${kind} control is disabled`)
     return devices.attach(socket, req.jarvisDevice)
   }
 
   console.log(
-    `[jarvis] screen connected: ${req.jarvisDevice ? `phone app (${req.jarvisDevice.name})` : 'PC'}`,
+    `[jarvis] screen connected: ${req.jarvisDevice ? `${req.jarvisDevice.kind} app (${req.jarvisDevice.name})` : HOME}`,
   )
 
   // A paired phone's interface loads images and pages by URL, which cannot
@@ -1453,9 +1502,10 @@ wss.on('connection', (socket, req) => {
   for (const alert of tower?.drainPending() ?? []) send({ type: 'alert', alert })
 
   // This screen, registered so other conversations can show things on it.
-  // A paired device is the phone app; anything else is the PC's interface.
+  // A paired device is the phone or Mac app, by how it was paired; anything
+  // else is the interface on this machine.
   const screenId = ++screenSeq
-  const screenKind = req.jarvisDevice ? 'phone' : 'pc'
+  const screenKind = req.jarvisDevice?.kind ?? 'pc'
   screens.set(screenId, {
     kind: screenKind,
     name: req.jarvisDevice?.name ?? '',
@@ -1474,8 +1524,8 @@ wss.on('connection', (socket, req) => {
       return {
         error:
           screen === 'pc'
-            ? 'Not shown: the JARVIS screen on the PC is not open right now. Tell the user in one sentence.'
-            : 'Not shown: the JARVIS app is not open on the phone right now. Tell the user in one sentence.',
+            ? `Not shown: the JARVIS screen on the ${HOME} is not open right now. Tell the user in one sentence.`
+            : `Not shown: the JARVIS app is not open on the ${screen === 'mac' ? 'Mac' : 'phone'} right now. Tell the user in one sentence.`,
       }
     }
     target.sendBlade(blade)
@@ -1644,6 +1694,8 @@ wss.on('connection', (socket, req) => {
         // Offered whether or not one is connected, so "open Maps on my phone"
         // gets a clear "it isn't connected" rather than a shrug.
         ...(DISABLED.has('phone') ? {} : { jarvis_phone: phoneServer(devices) }),
+        // The user's MacBook, the same way, through the JARVIS app for macOS.
+        ...(DISABLED.has('mac') ? {} : { jarvis_mac: macServer(devices) }),
         // Standing watches. One scheduler for the whole process, shared by
         // every connection, so a watch outlives the socket that started it.
         ...(tower ? { jarvis_watch: watchServer(tower) } : {}),
@@ -1654,9 +1706,7 @@ wss.on('connection', (socket, req) => {
       // keeps answers short enough to speak, and cuts cost per turn.
       // Plus where this conversation is happening — the PC or the phone —
       // which the shared prompt cannot know. See promptWhere.
-      systemPrompt: DISABLED.has('phone')
-        ? SYSTEM_PROMPT
-        : SYSTEM_PROMPT + promptWhere(screenKind, req.jarvisDevice?.name),
+      systemPrompt: SYSTEM_PROMPT + promptWhere(screenKind, req.jarvisDevice?.name),
       // Run from JARVIS's own workspace rather than the home directory. MCP
       // discovery does not depend on it — settingSources is empty and the
       // servers are passed in explicitly above — and file tools resolve

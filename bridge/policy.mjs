@@ -135,6 +135,9 @@ export const PHONE_READS = new Set([
   'status', 'list_apps', 'read_screen', 'screenshot', 'read_notifications', 'get_location',
 ])
 
+/** The jarvis_mac tools that only look (bridge/mac.mjs). Everything else there acts. */
+export const MAC_READS = new Set(['status', 'list_apps', 'read_screen', 'screenshot', 'read_clipboard'])
+
 export function decideTool(name, allowWrites = false) {
   if (READ_ONLY_BUILTINS.has(name)) return true
   if (WRITE_BUILTINS.has(name)) return allowWrites
@@ -175,6 +178,10 @@ export function decideTool(name, allowWrites = false) {
     // anything that acts waits for allowWrites, and the outbound ones (call,
     // text, reply) are confirmed again by the user on the phone itself.
     if (server === 'jarvis_phone') return PHONE_READS.has(tool) || allowWrites
+
+    // The Mac, the same way: looking runs freely, acting waits for
+    // allowWrites, and an iMessage or a Shortcut is confirmed again on the Mac.
+    if (server === 'jarvis_mac') return MAC_READS.has(tool) || allowWrites
 
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
       return allowWrites

@@ -57,8 +57,20 @@ function save(devices, file = devicesFile()) {
   }
 }
 
+/**
+ * What kind of machine a paired device is. Each kind has its own tools —
+ * jarvis_phone for a phone, jarvis_mac for a Mac — and a command meant for
+ * one must never land on the other just because it connected more recently.
+ */
+export const KINDS = ['phone', 'mac']
+const kindOf = (d) => (KINDS.includes(d?.kind) ? d.kind : 'phone')
+
+/** How a kind is named in a sentence that may be spoken. */
+export const KIND_LABEL = { phone: 'phone', mac: 'Mac' }
+
 /** Pair a new device. Returns the token — the only time it is ever visible. */
-export function createDevice(name, file = devicesFile()) {
+export function createDevice(name, file = devicesFile(), { kind = 'phone' } = {}) {
+  if (!KINDS.includes(kind)) throw new Error(`unknown device kind "${kind}" — use ${KINDS.join(' or ')}`)
   const clean = String(name ?? '').trim().slice(0, 60)
   if (!clean) throw new Error('give the device a name, e.g. "Pixel"')
   const devices = load(file)
@@ -69,11 +81,12 @@ export function createDevice(name, file = devicesFile()) {
   const device = {
     id: randomUUID(),
     name: clean,
+    kind,
     hash: hashToken(token).toString('hex'),
     created: new Date().toISOString(),
   }
   save([...devices, device], file)
-  return { id: device.id, name: device.name, token }
+  return { id: device.id, name: device.name, kind, token }
 }
 
 /** Remove a device by name or id. Returns whether anything was removed. */
@@ -88,7 +101,7 @@ export function revokeDevice(nameOrId, file = devicesFile()) {
 
 /** Paired devices, without their hashes. */
 export function listDevices(file = devicesFile()) {
-  return load(file).map(({ id, name, created }) => ({ id, name, created }))
+  return load(file).map((d) => ({ id: d.id, name: d.name, kind: kindOf(d), created: d.created }))
 }
 
 /**
@@ -112,7 +125,7 @@ export function deviceForToken(token, file = devicesFile()) {
       continue
     }
     if (stored.length === presented.length && timingSafeEqual(stored, presented)) {
-      found = { id: d.id, name: d.name }
+      found = { id: d.id, name: d.name, kind: kindOf(d) }
     }
   }
   return found
@@ -185,7 +198,7 @@ export function deviceForMediaKey(key, file = devicesFile()) {
   const id = mediaKeys.get(key)
   if (!id) return null
   const device = load(file).find((d) => d.id === id)
-  return device ? { id: device.id, name: device.name } : null
+  return device ? { id: device.id, name: device.name, kind: kindOf(device) } : null
 }
 
 // ---------------------------------------------------------------------------
@@ -215,9 +228,9 @@ export class DeviceHub {
     const old = this.links.get(device.id)
     if (old) old.socket.close(4000, 'replaced')
 
-    const link = { socket, device, info: {}, since: Date.now(), pending: new Map() }
+    const link = { socket, device, kind: kindOf(device), info: {}, since: Date.now(), pending: new Map() }
     this.links.set(device.id, link)
-    console.log(`[jarvis] device connected: ${device.name}`)
+    console.log(`[jarvis] device connected: ${device.name} (${link.kind})`)
 
     // Mobile networks drop sockets without a close. A ping the phone fails to
     // answer is the only way to notice before a command vanishes into it.
@@ -248,6 +261,7 @@ export class DeviceHub {
           capabilities: Array.isArray(msg.capabilities) ? msg.capabilities.map(String).slice(0, 100) : [],
           model: typeof msg.model === 'string' ? msg.model.slice(0, 80) : undefined,
           android: typeof msg.android === 'string' ? msg.android.slice(0, 20) : undefined,
+          macos: typeof msg.macos === 'string' ? msg.macos.slice(0, 20) : undefined,
         }
       } else if (msg?.type === 'device_result' && typeof msg.id === 'string') {
         const slot = link.pending.get(msg.id)
@@ -262,7 +276,7 @@ export class DeviceHub {
       clearInterval(timer)
       for (const slot of link.pending.values()) {
         clearTimeout(slot.timer)
-        slot.reject(new Error('the phone disconnected'))
+        slot.reject(new Error(`the ${KIND_LABEL[link.kind]} disconnected`))
       }
       link.pending.clear()
       // Only forget the link if it is still this one — a replacement may
@@ -274,15 +288,23 @@ export class DeviceHub {
     })
   }
 
-  connected() {
+  /** Devices connected right now, newest first — only those of `kind` when given. */
+  connected(kind) {
     return [...this.links.values()]
+      .filter((l) => !kind || l.kind === kind)
       .sort((a, b) => b.since - a.since)
-      .map((l) => ({ name: l.device.name, since: new Date(l.since).toISOString(), ...l.info }))
+      .map((l) => ({ name: l.device.name, kind: l.kind, since: new Date(l.since).toISOString(), ...l.info }))
   }
 
-  /** The link to use: the named device, or else the one connected most recently. */
-  pick(name) {
-    const links = [...this.links.values()].sort((a, b) => b.since - a.since)
+  /**
+   * The link to use: the named device, or else the one of this kind
+   * connected most recently. A name of the wrong kind is no match — "open
+   * Safari on Pixel" must not quietly become a command for the Mac.
+   */
+  pick(name, kind) {
+    const links = [...this.links.values()]
+      .filter((l) => !kind || l.kind === kind)
+      .sort((a, b) => b.since - a.since)
     if (!name) return links[0] ?? null
     const key = String(name).toLowerCase()
     return links.find((l) => l.device.name.toLowerCase() === key) ?? null
@@ -296,19 +318,20 @@ export class DeviceHub {
    * belong to commands that wait on the user — a confirmation on the phone's
    * screen takes as long as it takes.
    */
-  call(tool, args = {}, { device, timeoutMs = 20_000 } = {}) {
+  call(tool, args = {}, { device, kind = 'phone', timeoutMs = 20_000 } = {}) {
+    const label = KIND_LABEL[kind] ?? 'device'
     return new Promise((resolve, reject) => {
-      const link = this.pick(device)
+      const link = this.pick(device, kind)
       if (!link) {
         return reject(
-          new Error(device ? `no phone called "${device}" is connected` : 'no phone is connected'),
+          new Error(device ? `no ${label} called "${device}" is connected` : `no ${label} is connected`),
         )
       }
-      if (link.socket.readyState !== 1) return reject(new Error('the phone is not connected'))
+      if (link.socket.readyState !== 1) return reject(new Error(`the ${label} is not connected`))
       const id = `d${++this.calls}`
       const timer = setTimeout(() => {
         link.pending.delete(id)
-        reject(new Error('the phone did not answer in time'))
+        reject(new Error(`the ${label} did not answer in time`))
       }, timeoutMs)
       link.pending.set(id, { resolve, reject, timer })
       link.socket.send(JSON.stringify({ type: 'device_call', id, tool, args }))

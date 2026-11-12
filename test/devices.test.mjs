@@ -98,6 +98,55 @@ test('phone reads run freely; phone actions need write access', () => {
   }
 })
 
+test('mac reads run freely; mac actions need write access', () => {
+  for (const t of ['status', 'list_apps', 'read_screen', 'screenshot', 'read_clipboard']) {
+    assert.equal(decideTool(`mcp__jarvis_mac__${t}`), true, t)
+  }
+  for (const t of ['open_app', 'quit_app', 'click', 'type_text', 'press_key', 'media', 'set_volume', 'write_clipboard', 'run_shortcut', 'send_imessage']) {
+    assert.equal(decideTool(`mcp__jarvis_mac__${t}`), false, t)
+    assert.equal(decideTool(`mcp__jarvis_mac__${t}`, true), true, t)
+  }
+})
+
+// --- kinds -----------------------------------------------------------------
+
+test('a device is paired as a phone unless it is said to be a Mac', () => {
+  const phone = createDevice('Kind phone', file)
+  const mac = createDevice('Kind mac', file, { kind: 'mac' })
+  assert.equal(phone.kind, 'phone')
+  assert.equal(deviceForToken(phone.token, file)?.kind, 'phone')
+  assert.equal(deviceForToken(mac.token, file)?.kind, 'mac')
+  assert.equal(listDevices(file).find((d) => d.name === 'Kind mac')?.kind, 'mac')
+  assert.throws(() => createDevice('Toaster', file, { kind: 'toaster' }), /unknown device kind/)
+  revokeDevice('Kind phone', file)
+  revokeDevice('Kind mac', file)
+})
+
+test('a command for the phone never lands on a Mac that connected later, and back', async () => {
+  const hub = new DeviceHub({ pingMs: 60_000 })
+  const phone = fakeSocket()
+  const mac = fakeSocket()
+  hub.attach(phone, { id: 'p', name: 'Pixel', kind: 'phone' })
+  hub.attach(mac, { id: 'm', name: 'MacBook', kind: 'mac' })
+  mac.emit('message', JSON.stringify({ type: 'device_hello', capabilities: [], model: 'MacBookPro18,3', macos: '15.1' }))
+
+  void hub.call('open_app', { app: 'Maps' }, { kind: 'phone' }).catch(() => {})
+  assert.equal(phone.sent.length, 1)
+  assert.equal(mac.sent.length, 0)
+
+  void hub.call('open_app', { app: 'Safari' }, { kind: 'mac' }).catch(() => {})
+  assert.equal(mac.sent.length, 1)
+  assert.deepEqual(hub.connected('mac').map((d) => [d.name, d.macos]), [['MacBook', '15.1']])
+  assert.equal(hub.connected().length, 2)
+
+  // Naming a device of the other kind is no match, not a cross-wire.
+  await assert.rejects(hub.call('status', {}, { kind: 'mac', device: 'Pixel' }), /no Mac called "Pixel"/)
+  phone.close()
+  await assert.rejects(hub.call('status', {}, { kind: 'phone' }), /no phone is connected/)
+  mac.close()
+  await assert.rejects(hub.call('status', {}, { kind: 'mac' }), /no Mac is connected/)
+})
+
 // --- the hub ---------------------------------------------------------------
 
 /** Enough of a ws socket for the hub: it records what was sent to the phone. */
@@ -252,6 +301,14 @@ test('the device link needs a token, even from this machine', async () => {
   assert.equal(ok.status, 'open')
   assert.equal(ok.protocol, PROTOCOL)
   ok.socket.close()
+})
+
+test('a paired Mac opens the device link with its own token', async () => {
+  const { token: macToken } = createDevice('Bridge test mac', file, { kind: 'mac' })
+  const ok = await ws('/device', [PROTOCOL, `jarvis.token.${macToken}`], TAILNET)
+  assert.equal(ok.status, 'open')
+  ok.socket.close()
+  revokeDevice('Bridge test mac', file)
 })
 
 test('the HUD socket still refuses a foreign origin without a token', async () => {

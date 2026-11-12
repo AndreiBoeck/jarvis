@@ -44,10 +44,10 @@ const device = z
 const KEEP_IMAGES = 10
 const savedImages = []
 
-function savePhoneImage(base64, mimeType) {
+function saveDeviceImage(base64, mimeType, kind) {
   try {
     const ext = mimeType === 'image/png' ? 'png' : 'jpg'
-    const path = join(tmpdir(), `jarvis-phone-${Date.now()}.${ext}`)
+    const path = join(tmpdir(), `jarvis-${kind}-${Date.now()}.${ext}`)
     writeFileSync(path, Buffer.from(base64, 'base64'))
     savedImages.push(path)
     while (savedImages.length > KEEP_IMAGES) rmSync(savedImages.shift(), { force: true })
@@ -57,32 +57,35 @@ function savePhoneImage(base64, mimeType) {
   }
 }
 
-const text = (t) => ({ type: 'text', text: t })
+export const text = (t) => ({ type: 'text', text: t })
 const fail = (t) => ({ isError: true, content: [text(t)] })
 
 /**
+ * Run one command on a paired device of `kind` and turn its reply into tool
+ * content. Shared by the phone's tools and the Mac's (mac.mjs): both apps
+ * speak the same protocol down the same /device socket.
+ *
+ * The device answers { ok, text?, json?, data?, mimeType?, error? }. Every
+ * failure comes back as one plain sentence, because it may well be spoken.
+ *
  * @param {import('./devices.mjs').DeviceHub} hub
+ * @param {'phone' | 'mac'} kind
  */
-export function phoneServer(hub) {
-  /**
-   * Run one command on the phone and turn its reply into tool content.
-   *
-   * The phone answers { ok, text?, json?, data?, mimeType?, error? }. Every
-   * failure comes back as one plain sentence, because it may well be spoken.
-   */
-  const relay = async (name, args, timeoutMs) => {
+export function deviceRelay(hub, kind) {
+  const label = kind === 'mac' ? 'Mac' : 'phone'
+  return async (name, args, timeoutMs) => {
     const { device: which, ...rest } = args ?? {}
     let reply
     try {
-      reply = await hub.call(name, rest, { device: which, timeoutMs })
+      reply = await hub.call(name, rest, { device: which, kind, timeoutMs })
     } catch (err) {
       return fail(
-        `Could not reach the phone: ${err?.message ?? err}. ` +
-          'Tell the user in one sentence; the JARVIS app on the phone may be closed or offline.',
+        `Could not reach the ${label}: ${err?.message ?? err}. ` +
+          `Tell the user in one sentence; the JARVIS app on the ${label} may be closed or offline.`,
       )
     }
     if (!reply?.ok) {
-      return fail(String(reply?.error ?? 'The phone could not do that.'))
+      return fail(String(reply?.error ?? `The ${label} could not do that.`))
     }
     const content = []
     if (typeof reply.text === 'string' && reply.text) content.push(text(reply.text))
@@ -91,7 +94,7 @@ export function phoneServer(hub) {
       // The model can see an image it is handed, but a blade can only show a
       // file or a URL. Saved to disk as well, so "show me my phone screen"
       // can put it on the display — the /file route serves the temp folder.
-      const path = savePhoneImage(reply.data, reply.mimeType)
+      const path = saveDeviceImage(reply.data, reply.mimeType, kind)
       if (path) {
         content.push(
           text(`Saved at ${path} — to show it, open a blade of kind "image" with this path as its url.`),
@@ -102,6 +105,13 @@ export function phoneServer(hub) {
     if (!content.length) content.push(text('Done.'))
     return { content }
   }
+}
+
+/**
+ * @param {import('./devices.mjs').DeviceHub} hub
+ */
+export function phoneServer(hub) {
+  const relay = deviceRelay(hub, 'phone')
 
   const def = (name, description, shape, timeoutMs) =>
     tool(name, description, { ...shape, device }, (args) => relay(name, args, timeoutMs))
@@ -121,7 +131,7 @@ export function phoneServer(hub) {
         'Which phones are connected right now, with battery, network and what each app build can do. Check this first when unsure whether the phone is reachable.',
         {},
         async () => {
-          const phones = hub.connected()
+          const phones = hub.connected('phone')
           if (!phones.length) return { content: [text('No phone is connected.')] }
           const live = await relay('status', {}, 8_000)
           return {
