@@ -41,6 +41,10 @@ export default defineConfig(({ mode }) => {
       // only accepts sockets from localhost:5173-5199, so stay inside that range
       // or set JARVIS_ALLOWED_ORIGINS to match.
       port: Number(process.env.PORT) || 5173,
+      // `npm start` runs the long-lived JARVIS, where hot reload does harm: a
+      // module swapped into the running page splits the voice loop from the
+      // screen it reports to. `npm run dev` keeps it.
+      hmr: process.env.JARVIS_NO_HMR === '1' ? false : undefined,
     },
     optimizeDeps: {
       // kokoro-js pulls in `phonemizer`, which carries espeak-ng as inline WASM.

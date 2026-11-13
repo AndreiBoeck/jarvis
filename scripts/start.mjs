@@ -117,7 +117,10 @@ console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
 run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
-run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})
+// No hot reload here: this is the copy that stays up all day, and swapping code
+// into a running JARVIS leaves his microphone loop talking to the old screen —
+// he shows "listening" and hears nothing. A change takes effect on reload.
+run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', { JARVIS_NO_HMR: '1' })
 
 console.log(
   '\nWhen it says the dev server is ready, open the URL it prints in Chrome,\n' +
