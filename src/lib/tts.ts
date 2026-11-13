@@ -440,7 +440,10 @@ export function createSpeaker(): Speaker {
     setSpeaking(item.text)
     try {
       const url = item.audio ? await item.audio : null
-      if (cancelled) return
+      if (cancelled) {
+        if (url) URL.revokeObjectURL(url)
+        return
+      }
       // A failed generation is not a failed turn — drop to the system voice.
       if (url) {
         await playUrl(url, item.text)
@@ -607,12 +610,18 @@ export function createSpeaker(): Speaker {
       diag.voice = diag.engine === 'kokoro' ? KOKORO_VOICE : 'ElevenLabs'
 
       let read: (() => number) | null = null
+      // Taken apart when the sentence ends. Left connected, every sentence he
+      // ever spoke stayed wired into the shared context — element, source and
+      // analyser — for the life of the page.
+      let wired: AudioNode[] = []
       const ctx = outputContext()
       if (ctx) {
         try {
           const analyser = ctx.createAnalyser()
           analyser.fftSize = 256
-          ctx.createMediaElementSource(audio).connect(analyser)
+          const source = ctx.createMediaElementSource(audio)
+          wired = [source, analyser]
+          source.connect(analyser)
           analyser.connect(ctx.destination)
           const bins = new Uint8Array(analyser.frequencyBinCount)
           read = () => {
@@ -639,6 +648,14 @@ export function createSpeaker(): Speaker {
         done = true
         cancelAnimationFrame(raf)
         outLevel = 0.12
+        for (const node of wired) {
+          try {
+            node.disconnect()
+          } catch {
+            /* already gone */
+          }
+        }
+        wired = []
         URL.revokeObjectURL(url)
         if (currentAudio === audio) currentAudio = null
         resolve()
@@ -723,6 +740,10 @@ export function createSpeaker(): Speaker {
       if (cancelled) return
       cancelled = true
       buffer = ''
+      // Sentences generated ahead but never played still hold their audio.
+      for (const item of queue) {
+        void item.audio?.then((url) => url && URL.revokeObjectURL(url))
+      }
       queue.length = 0
       // Keep the echo tail: the words already in the air still have to be
       // recognised and discarded, even though he has stopped adding to them.

@@ -48,7 +48,9 @@ export type WatchAlert = {
   id: string
   watchId: string
   task: string
-  kind: 'alert' | 'paused'
+  /** mail-morning: the briefing is ready, read it on the next wake.
+   *  mail-report: the afternoon mail report, read as soon as he is free. */
+  kind: 'alert' | 'paused' | 'mail-morning' | 'mail-report'
   message: string
   at: number
 }

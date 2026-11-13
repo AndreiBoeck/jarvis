@@ -84,6 +84,83 @@ const MAX_MS = 20000
 const FLOOR_UP = 0.0008
 const FLOOR_DOWN = 0.02
 
+/**
+ * The clock that drives the detector, run on the audio thread.
+ *
+ * This used to be requestAnimationFrame, which Chrome stops dead the moment
+ * the window is minimised or hidden behind another one. A segment that had
+ * just started recording then never ended: the MediaRecorder kept going with
+ * nothing to stop it, holding every second of audio in memory, until the tab
+ * ran out and died with "Aw, Snap!" after a few hours left alone. The audio
+ * thread is never throttled, so a worklet that only counts samples and posts a
+ * beat ~60 times a second keeps the detector — and its stop condition — alive
+ * whatever the window is doing. The rates below were tuned per beat at 60Hz,
+ * which this keeps.
+ */
+const CLOCK_SRC = `
+class JarvisClock extends AudioWorkletProcessor {
+  constructor() { super(); this.n = 0; this.every = Math.round(sampleRate / 60) }
+  process() {
+    this.n += 128
+    if (this.n >= this.every) { this.n -= this.every; this.port.postMessage(0) }
+    return true
+  }
+}
+registerProcessor('jarvis-clock', JarvisClock)
+`
+
+async function startClock(
+  ctx: AudioContext,
+  source: AudioNode,
+  beat: () => void,
+): Promise<() => void> {
+  try {
+    const url = URL.createObjectURL(new Blob([CLOCK_SRC], { type: 'application/javascript' }))
+    try {
+      await ctx.audioWorklet.addModule(url)
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+    const node = new AudioWorkletNode(ctx, 'jarvis-clock')
+    // Pulled only while it leads to the speakers, so route it there — silenced.
+    const mute = ctx.createGain()
+    mute.gain.value = 0
+    source.connect(node)
+    node.connect(mute)
+    mute.connect(ctx.destination)
+    node.port.onmessage = beat
+    return () => {
+      node.port.onmessage = null
+      try {
+        source.disconnect(node)
+        node.disconnect()
+        mute.disconnect()
+      } catch {
+        /* already gone */
+      }
+    }
+  } catch {
+    // No worklets here: animation frames while visible, and a coarse timer
+    // while hidden, so a recording can still be ended rather than left running.
+    let raf = 0
+    let alive = true
+    const frame = () => {
+      if (!alive) return
+      beat()
+      raf = requestAnimationFrame(frame)
+    }
+    frame()
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'hidden') beat()
+    }, 250)
+    return () => {
+      alive = false
+      cancelAnimationFrame(raf)
+      clearInterval(timer)
+    }
+  }
+}
+
 function pickMime(): string {
   const candidates = [
     'audio/webm;codecs=opus',
@@ -142,7 +219,6 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
   let speaking = false
   let speechStartedAt = 0
   let lastLoud = 0
-  let raf = 0
 
   const rms = (): number => {
     analyser.getFloatTimeDomainData(buf)
@@ -202,7 +278,6 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
 
   const tick = () => {
     if (stopped) return
-    raf = requestAnimationFrame(tick)
 
     const energy = rms()
     smoothEnergy += (energy - smoothEnergy) * 0.5
@@ -250,12 +325,16 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
     }
   }
 
-  tick()
+  let stopClock: () => void = () => {}
+  void startClock(ctx, source, tick).then((stop) => {
+    if (stopped) stop()
+    else stopClock = stop
+  })
 
   return {
     stop: () => {
       stopped = true
-      cancelAnimationFrame(raf)
+      stopClock()
       discardRecorder()
       try {
         source.disconnect()

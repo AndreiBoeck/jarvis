@@ -153,6 +153,9 @@ export default function App() {
    * is it now?"). Saying anything while it plays stops it, like any answer.
    */
   const alerts = useRef<WatchAlert[]>([])
+  /** The morning briefing was gathered while he was already up: it is read
+   *  the next time his name is said, not to an empty room at seven. */
+  const mailWaiting = useRef(false)
   const alertSub = useRef<(() => void) | null>(null)
 
   const announceNext = () => {
@@ -160,6 +163,11 @@ export default function App() {
     if (phase !== 'dormant' && phase !== 'listening') return
     const next = alerts.current.shift()
     if (!next) return
+    // The afternoon mail report: the bridge holds it, the briefing path reads it.
+    if (next.kind === 'mail-report') {
+      void respond('', true)
+      return
+    }
 
     clearIdle()
     const mine = ++turn.current
@@ -321,6 +329,13 @@ export default function App() {
       return
     }
 
+    // The morning briefing has been waiting for him to be called.
+    if (mailWaiting.current) {
+      mailWaiting.current = false
+      void respond('', true)
+      return
+    }
+
     store.getState().setPhase('waking')
 
     // Answer to his name. Deliberately NOT awaited any more: the microphone is
@@ -438,6 +453,10 @@ export default function App() {
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
     watchAlerts((alert) => {
+      if (alert.kind === 'mail-morning') {
+        mailWaiting.current = true
+        return
+      }
       if (alerts.current.some((a) => a.id === alert.id)) return
       alerts.current.push(alert)
       announceNext()
@@ -620,7 +639,10 @@ export default function App() {
     // and the weather and the day on one more — read out the moment he is up.
     // The PC and the Mac only; the bridge answers the phone with nothing. Saying
     // anything cuts it off, like any answer, and "descansa" ends it outright.
-    if (usingBridge && !IS_APP) void respond('', true)
+    if (usingBridge && !IS_APP) {
+      mailWaiting.current = false
+      void respond('', true)
+    }
   }
 
   // -- clap to start --------------------------------------------------------

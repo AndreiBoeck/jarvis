@@ -34,6 +34,15 @@ import {
 import { Caller, callServer, maskNumber } from './calls.mjs'
 import { askCodex, looksLikeLimit, CODEX_ENABLED } from './codex.mjs'
 import {
+  Mailroom,
+  GATHER_SYSTEM_PROMPT,
+  MORNING_SCHEMA,
+  REPORT_SCHEMA,
+  dayOf,
+  gatherPrompt,
+  present,
+} from './mail.mjs'
+import {
   DeviceHub,
   MEDIA_ROUTES,
   chooseProtocol,
@@ -1439,6 +1448,95 @@ const tower = DISABLED.has('watch')
 tower?.start()
 
 /**
+ * The mail, gathered in the background — the morning briefing at seven and the
+ * afternoon report at two (see mail.mjs). Each gathering is one unattended run
+ * with the same locks as a watch check: read-only whatever the write switch
+ * says, no camera, no interface controls, a spend cap.
+ */
+const MAIL_MODEL = process.env.JARVIS_MAIL_MODEL ?? MODEL
+const MAIL_EFFORT = process.env.JARVIS_MAIL_EFFORT ?? 'low'
+const MAIL_BUDGET_USD = Number(process.env.JARVIS_MAIL_BUDGET_USD) || 2
+const MAIL_TIMEOUT_MS = 6 * 60_000
+
+async function gatherMail(kind, sinceMs) {
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), MAIL_TIMEOUT_MS)
+  const run = query({
+    prompt: gatherPrompt(kind, sinceMs, { location: BRIEFING_LOCATION }),
+    options: {
+      mcpServers: {
+        ...MCP_SERVERS,
+        ...(DISABLED.has('browser') ? {} : { jarvis_chrome: chromeServer({ allowWrites: false }) }),
+      },
+      systemPrompt: GATHER_SYSTEM_PROMPT,
+      cwd: WORKSPACE,
+      tools: builtinTools(false),
+      hooks: { PreToolUse: [{ hooks: [policyHook(false)] }] },
+      settingSources: [],
+      strictMcpConfig: !ACCOUNT_CONNECTORS,
+      model: MAIL_MODEL,
+      effort: MAIL_EFFORT,
+      maxTurns: 30,
+      maxBudgetUsd: MAIL_BUDGET_USD,
+      persistSession: false,
+      ...(process.env.JARVIS_CLAUDE_EXECUTABLE
+        ? { pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE_EXECUTABLE }
+        : {}),
+      permissionMode: 'default',
+      outputFormat: {
+        type: 'json_schema',
+        schema: kind === 'morning' ? MORNING_SCHEMA : REPORT_SCHEMA,
+      },
+      abortController: abort,
+      canUseTool: async (toolName) =>
+        decidePolicy(toolName, false)
+          ? { behavior: 'allow' }
+          : { behavior: 'deny', message: 'Blocked: the mail clerk can only look, never act.' },
+    },
+  })
+  try {
+    for await (const msg of run) {
+      if (msg.type !== 'result') continue
+      if (msg.subtype !== 'success') throw new Error(`gathering ended with ${msg.subtype}`)
+      if (msg.total_cost_usd != null) {
+        console.log(`[jarvis] mail: the ${kind} cost ${msg.total_cost_usd.toFixed(3)}`)
+      }
+      return msg.structured_output ?? JSON.parse(msg.result ?? '')
+    }
+    throw new Error('gathering ended without a result')
+  } finally {
+    clearTimeout(timer)
+    run.close?.()
+  }
+}
+
+const mailroom = BRIEFING_ON
+  ? new Mailroom({
+      gather: gatherMail,
+      // Ready. Each open PC or Mac screen hears about it as an alert: the
+      // report is read as soon as he is free, the morning on the next time his
+      // name is said. With no screen up, it waits for the next start-up.
+      notify: (kind) => {
+        for (const screen of screens.values()) {
+          if (screen.kind !== 'pc' && screen.kind !== 'mac') continue
+          screen.send({
+            type: 'alert',
+            alert: {
+              id: `mail-${kind}-${dayOf(Date.now())}`,
+              watchId: 'mail',
+              task: kind,
+              kind: `mail-${kind}`,
+              message: '',
+              at: Date.now(),
+            },
+          })
+        }
+      },
+    })
+  : null
+mailroom?.start()
+
+/**
  * Every JARVIS screen open right now: the PC's interface and the phone app's.
  *
  * Each is its own conversation, and before this each could only draw on
@@ -1695,6 +1793,7 @@ wss.on('connection', (socket, req) => {
     kind: screenKind,
     name: req.jarvisDevice?.name ?? '',
     since: Date.now(),
+    send,
     sendBlade: (blade) => send({ type: 'blade', blade }),
   })
 
@@ -1783,6 +1882,62 @@ wss.on('connection', (socket, req) => {
     } finally {
       if (codexRun === ac) codexRun = null
     }
+  }
+
+  /**
+   * What the agent has not seen but the user has heard: the mail JARVIS read
+   * out from the background gathering, which never passed through the session.
+   * Put in front of the next question, so "reply to the second one" lands.
+   */
+  let unseen = ''
+  let latestAsk = null
+
+  /**
+   * The briefing and the mail report, from what was gathered in the background.
+   *
+   * Instant when it is already in hand; the first start of a day before seven,
+   * or after the bridge was off, gathers it now and the wait shows as work.
+   * Anything that cannot be gathered falls back to the agent doing it live.
+   */
+  const presentMail = async (askId) => {
+    const tag = (m) => send({ ...m, ask: askId })
+    const owed = mailroom.pending()
+    if (!owed.morning && !mailroom.state.morningShown) tag({ type: 'tool', name: 'mail' })
+    let items = []
+    try {
+      items = await mailroom.collect({ gatherMissing: true })
+    } catch (err) {
+      console.warn(`[jarvis] mail: could not collect: ${err?.message ?? err}`)
+    }
+    // Said something else meanwhile: this is no longer what they are waiting for.
+    if (latestAsk !== askId) return null
+    if (!items.length) {
+      // Nothing owed (already read today) — or the gathering failed and the
+      // morning is still owed, in which case the agent does it live.
+      if (mailroom.state.morningShown || mailroom.state.day !== dayOf(Date.now())) {
+        tag({ type: 'done', text: '', costUsd: null })
+        return null
+      }
+      return briefingPrompt(screenKind)
+    }
+    mailroom.markShown(items)
+    items = items.filter((i) => !i.covered)
+    let spoken = ''
+    for (const item of items) {
+      const { blades, speech } = present(item)
+      for (const blade of blades) send({ type: 'blade', blade })
+      const line = (spoken ? ' ' : '') + speech
+      spoken += line
+      tag({ type: 'text', delta: line })
+    }
+    tag({ type: 'done', text: spoken, costUsd: null })
+    remember('(mail briefing)', spoken)
+    const detail = items
+      .flatMap((i) => i.data?.emails ?? [])
+      .map((e, n) => `${n + 1}. From ${e.from}: "${e.subject}" (${e.received}) — ${e.summary}`)
+      .join('\n')
+    unseen = `[Context from the JARVIS system: you have just read the user this mail briefing.\n${spoken}\n${detail}]\n\n`
+    return null
   }
 
   /**
@@ -2212,14 +2367,27 @@ wss.on('connection', (socket, req) => {
        */
       const briefing = msg.kind === 'briefing'
       const id = typeof msg.id === 'string' ? msg.id : null
+      latestAsk = id
       // The start-up briefing belongs to the PC and the Mac. Anywhere else, or
       // switched off, it is answered with nothing at once.
       if (briefing && (!BRIEFING_ON || (screenKind !== 'pc' && screenKind !== 'mac'))) {
         send({ type: 'done', text: '', costUsd: null, ask: id })
         return
       }
-      const text = briefing ? briefingPrompt(screenKind) : msg.text
-      void settling.then(() => {
+      void settling.then(async () => {
+        let text = msg.text
+        if (briefing) {
+          if (!mailroom) {
+            text = briefingPrompt(screenKind)
+          } else {
+            const live = await presentMail(id)
+            if (!live) return
+            text = live
+          }
+        } else if (unseen) {
+          text = unseen + text
+          unseen = ''
+        }
         answering = id
         question = text
         questionLabel = briefing ? '(start-up briefing)' : ''
@@ -2249,6 +2417,7 @@ wss.on('connection', (socket, req) => {
     }
 
     if (msg.type === 'interrupt') {
+      latestAsk = null
       // A Codex answer in flight stops with it, process and all.
       codexRun?.abort()
       codexRun = null
