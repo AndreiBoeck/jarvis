@@ -2057,3 +2057,43 @@ kbd {
   bottom: calc(160px + env(safe-area-inset-bottom));
   max-width: calc(100vw - 32px);
 }
+
+/* Microphone mute. The toggle sits with the status in the top bar; while muted
+   a red strip says so plainly, because a JARVIS that silently ignores you looks
+   exactly like a broken one. Both are clickable — the HUD itself is not. */
+.mic-toggle {
+  margin-left: 12px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: color-mix(in srgb, var(--accent) 90%, white);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.mic-toggle:hover { background: color-mix(in srgb, var(--accent) 14%, transparent) }
+.mic-toggle.is-muted {
+  color: #ff8080;
+  border-color: rgba(255, 77, 77, 0.6);
+  background: rgba(255, 77, 77, 0.12);
+}
+.mic-muted {
+  position: fixed;
+  bottom: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 96;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: #ffb3b3;
+  background: rgba(60, 4, 6, 0.82);
+  border: 1px solid rgba(255, 77, 77, 0.65);
+  box-shadow: 0 0 18px rgba(255, 77, 77, 0.25);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  pointer-events: auto;
+}

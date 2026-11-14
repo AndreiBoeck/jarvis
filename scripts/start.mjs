@@ -13,6 +13,27 @@
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+/**
+ * On Windows, JARVIS is the desktop app (desktop/main.cjs): the brain and the
+ * face in one window that stays alive by itself. `npm start` builds the page if
+ * it is out of date and opens the app; `--writes` passes straight through.
+ *
+ * Everywhere else — and on Windows with `--browser` — it is the original pair
+ * of processes below, a page to open in Chrome. The Mac app's "whole JARVIS on
+ * the Mac" mode runs exactly that, so it stays.
+ */
+if (process.platform === 'win32' && !process.argv.includes('--browser')) {
+  const build = spawn(process.execPath, ['desktop/build.mjs', '--if-needed'], { stdio: 'inherit' })
+  const built = await new Promise((r) => build.on('exit', r))
+  if (built !== 0) process.exit(built ?? 1)
+  const electron = createRequire(import.meta.url)('electron')
+  const app = spawn(electron, ['.', ...process.argv.slice(2)], { stdio: 'inherit' })
+  app.on('exit', (code) => process.exit(code ?? 0))
+  // Everything below is the browser version; never reached on this path.
+  await new Promise(() => {})
+}
 
 /**
  * Put MediaPipe's WebAssembly where the page can actually load it.

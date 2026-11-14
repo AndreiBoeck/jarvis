@@ -34,10 +34,11 @@ import {
   usingBridge,
   type Msg,
 } from './lib/brain'
-import { startAnalyser, micLevel } from './lib/audio'
+import { startAnalyser, micLevel, releaseMic } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { env } from './config'
 import { isRestOrder } from './lib/rest'
+import { IS_DESKTOP, onDesktopMute, reportMuted, loadMuted, saveMuted } from './lib/desktop'
 
 /**
  * The conversation.
@@ -104,6 +105,65 @@ export default function App() {
     speaker.current = null
   }
 
+  // -- the microphone: mute, and the phone app off screen -------------------
+
+  /** Opens a fresh voice loop. Set once the boot sequence knows how. */
+  const openVoiceFn = useRef<(() => Promise<Voice>) | null>(null)
+  const reopening = useRef<Promise<void> | null>(null)
+
+  /**
+   * Whether the microphone should be open right now. Two things close it: the
+   * user muting him, and — in the phone app only — the app leaving the screen,
+   * where a loop kept running in a pocket all day and drained the battery.
+   */
+  const micWanted = () =>
+    !store.getState().muted && !(IS_APP && document.visibilityState === 'hidden')
+
+  /** Let go completely: the loop, the stream, the analyser. The OS microphone
+   *  light goes out, which is the only mute indicator anyone actually trusts. */
+  const closeMic = () => {
+    voice.current?.stop()
+    voice.current = null
+    releaseMic()
+  }
+
+  /** Bring the microphone in line with micWanted(). Safe to call any time. */
+  const syncMic = () => {
+    if (!micWanted()) {
+      closeMic()
+      return
+    }
+    const open = openVoiceFn.current
+    if (voice.current || reopening.current || !open) return
+    reopening.current = (async () => {
+      try {
+        await startAnalyser()
+      } catch {
+        /* the reactor just won't pulse */
+      }
+      const v = await open()
+      // Muted, or sent off screen, while it was opening.
+      if (!micWanted()) {
+        v.stop()
+        releaseMic()
+      } else voice.current = v
+    })().finally(() => {
+      reopening.current = null
+    })
+  }
+
+  const setMute = (on: boolean) => {
+    const s = store.getState()
+    if (s.muted === on) return
+    s.setMuted(on)
+    saveMuted(on)
+    reportMuted(on)
+    // A turn that was waiting for words will never get them.
+    if (on && (s.phase === 'listening' || s.phase === 'waking')) goDormant()
+    if (s.phase !== 'offline' && s.phase !== 'boot') sfx.play(on ? 'done' : 'listen')
+    syncMic()
+  }
+
   const goDormant = () => {
     clearIdle()
     silence()
@@ -137,6 +197,11 @@ export default function App() {
     clearIdle()
     const s = store.getState()
     s.setCaption('')
+    // Muted, the follow-up window would be a lie: nothing is listening.
+    if (s.muted) {
+      s.setPhase('dormant')
+      return
+    }
     s.setPhase('listening')
     sfx.play('listen')
     idleTimer.current = setTimeout(goDormant, window)
@@ -562,6 +627,11 @@ export default function App() {
     watchConnection((state) => {
       if (state === 'lost') {
         store.getState().setError('Bridge connection lost — reconnecting.')
+      } else if (state === 'open') {
+        // A first dial that failed (the bridge was still starting) left its
+        // error up; now that the line is open it is no longer true.
+        const e = store.getState().error
+        if (e && /reach (the bridge|JARVIS)/.test(e)) store.getState().setError(null)
       } else if (state === 'reconnected') {
         store
           .getState()
@@ -606,13 +676,15 @@ export default function App() {
     // getUserMedia stream; speech recognition does not, and gets its own. So a
     // failure here costs the animation and nothing else — saying "voice input
     // is unavailable" was both alarming and untrue.
-    try {
-      await startAnalyser()
-    } catch {
-      console.warn(
-        '[jarvis] no microphone stream — the reactor will not pulse with your ' +
-          'voice. Speech recognition is unaffected.',
-      )
+    if (micWanted()) {
+      try {
+        await startAnalyser()
+      } catch {
+        console.warn(
+          '[jarvis] no microphone stream — the reactor will not pulse with your ' +
+            'voice. Speech recognition is unaffected.',
+        )
+      }
     }
 
     // Ask the bridge which speech engines exist before the loop starts, so the
@@ -623,15 +695,29 @@ export default function App() {
     await probeCapabilities()
     store.getState().setVoice(currentVoiceName())
 
-    // One voice loop, started once, running until the page closes.
-    voice.current = await startVoice({
-      mode,
-      onWake,
-      onSpeechStart,
-      onPartial,
-      onUtterance,
-      onError: onVoiceError,
-    })
+    // One voice loop, running until the page closes — unless the user mutes
+    // him, or (in the phone app) the app leaves the screen. Either closes the
+    // microphone completely and syncMic() opens it again afterwards. An answer
+    // already on its way still arrives and is spoken.
+    openVoiceFn.current = () =>
+      startVoice({
+        mode,
+        onWake,
+        onSpeechStart,
+        onPartial,
+        onUtterance,
+        onError: onVoiceError,
+      })
+    if (micWanted()) {
+      const v = await openVoiceFn.current()
+      if (micWanted()) voice.current = v
+      else {
+        v.stop()
+        releaseMic()
+      }
+    } else releaseMic()
+
+    if (IS_APP) document.addEventListener('visibilitychange', syncMic)
 
     store.getState().setPhase('dormant')
 
@@ -659,8 +745,9 @@ export default function App() {
    * been granted yet, the button is still right there; announcing an error
    * about a feature nobody asked for would be worse than quietly doing without.
    */
+  const muted = useStore((s) => s.muted)
   useEffect(() => {
-    if (phase !== 'offline') return
+    if (phase !== 'offline' || muted) return
     let live: { stop: () => void } | null = null
     let gone = false
     void listenForClap(() => {
@@ -674,7 +761,7 @@ export default function App() {
       live?.stop()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase])
+  }, [phase, muted])
 
   // -- talk: Space on the desktop, the talk button in the app ---------------
 
@@ -687,6 +774,8 @@ export default function App() {
     const phase = store.getState().phase
     if (phase === 'offline') {
       void powerOn()
+    } else if (store.getState().muted) {
+      store.getState().setError('Microphone muted — press M to unmute.')
     } else if (phase === 'boot') {
       /* ignore — the boot sequence owns the phase until it finishes */
     } else if (
@@ -702,6 +791,27 @@ export default function App() {
   }
 
   // -- level pump + keys ----------------------------------------------------
+
+  const toggleMute = () => {
+    const on = !store.getState().muted
+    setMute(on)
+    store.getState().setError(null)
+  }
+
+  // Mute is remembered across reloads, and the Windows app can drive it from
+  // the tray and a global shortcut. The app also boots him straight away: it
+  // restarts the page by itself after a crash, and a JARVIS that comes back to
+  // a button nobody is there to press has not really come back.
+  useEffect(() => {
+    if (loadMuted()) store.getState().setMuted(true)
+    reportMuted(store.getState().muted)
+    onDesktopMute((on) => {
+      if (on === null) toggleMute()
+      else setMute(on)
+    })
+    if (IS_DESKTOP) void powerOn()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     let raf = 0
@@ -794,6 +904,15 @@ export default function App() {
         return
       }
 
+      // M mutes the microphone, and M again brings it back. Muted is properly
+      // off — the device is released, not merely ignored — so the wake word
+      // cannot fire either.
+      if (e.key === 'm' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        toggleMute()
+        return
+      }
+
       // Escape stands the whole thing down — the one thing the old build had
       // no key for at all.
       if (e.key === 'Escape') {
@@ -826,7 +945,7 @@ export default function App() {
   return (
     <>
       <Scene />
-      <Hud />
+      <Hud onToggleMute={toggleMute} />
       <Boot />
       <Diagnostics />
       <Ignition onStart={() => void powerOn()} />

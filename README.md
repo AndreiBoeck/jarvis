@@ -27,11 +27,13 @@ can have — Node.js and Chrome. That's the whole list.
   API key**, and usage is billed to your existing Claude account.
 - **Node.js 20 or newer** — free, one installer from <https://nodejs.org>. This
   is a Node web app, so it is the one unavoidable tool.
-- **Google Chrome or Microsoft Edge**, in a **real browser window** — not an
+- **On macOS and Linux: Google Chrome or Microsoft Edge** (on Windows the app
+  brings its own), in a **real browser window** — not an
   embedded preview pane. Preview panes (including the one inside editors and
   Claude Code) block microphone access, so the page loads and looks right but
   never hears you. JARVIS also needs WebGL, which these browsers provide.
-- **Optional: an ElevenLabs API key** — a good add-on, not a requirement. It
+- **An ElevenLabs API key** — needed for the Windows app to hear you; optional
+  in the browser version. It
   gives a better voice and sharper transcription; the free tier is plenty for a
   demo. Without it, everything runs on the browser's own speech.
 
@@ -42,43 +44,23 @@ language.
 
 ## Quick start
 
-First, install, then start it:
-
 ```bash
 npm install
-npm start          # runs the brain and the face together
+npm start -- --writes   # Windows: opens the JARVIS app. Leave off --writes to keep him read-only.
 ```
 
-Then open the URL it prints (http://localhost:5173) in **Chrome**, click **INITIALISE**, and say **“Hey Jarvis”**.
+On **Windows**, JARVIS is a desktop app: the brain and the interface in one
+window, with a tray icon, that boots on its own and comes back by itself if it
+crashes. `npm start` builds the interface the first time (and whenever it has
+changed) and opens it. Say **"Hey Jarvis"**. See [The Windows app](#the-windows-app).
 
-Prefer two terminals? Run them separately instead:
+On **macOS and Linux**, and on Windows with `npm run start:browser`, it is the
+browser version: `npm start` runs the brain and the face together, then open
+http://localhost:5173 in a **real Chrome or Edge window** (embedded preview
+panes block the microphone), click **INITIALISE** and say **"Hey Jarvis"**.
 
-```bash
-npm install
-```
-
-Terminal 1 — the brain:
-
-```bash
-npm run bridge
-```
-
-Terminal 2 — the face:
-
-```bash
-npm run dev
-```
-
-Then open the app in a **real Chrome or Edge window**:
-
-```bash
-open http://localhost:5173
-```
-
-Click **INITIALISE**, allow the microphone when asked, and say **"Hey Jarvis"**.
-
-> It has to be a real browser window. Embedded preview panes block the
-> microphone, so JARVIS will look perfectly alive and simply never respond.
+Working on the interface? `npm run bridge` and `npm run dev` in two terminals
+give you hot reload in Chrome.
 
 ---
 
@@ -249,10 +231,42 @@ chose.
 | **"Hey Jarvis"** | Wake him |
 | **Space** | Talk without the wake word |
 | Just speak | Interrupt him mid-sentence (barge-in) |
+| **M** | Mute or unmute the microphone (also the MIC button, top right) |
 | **V** | Cycle the browser voice |
 | **Escape** | Stand down |
 | **D** | Live diagnostics panel |
 | **T** | One-line audio self-test |
+
+---
+
+## The Windows app
+
+The same JARVIS in a window of his own, instead of a console and a Chrome tab:
+
+```bash
+npm start -- --writes   # builds the interface if needed, then opens the app
+```
+
+A shortcut that skips the console: point it at
+`node_modules\electron\dist\electron.exe` with the arguments
+`"<this folder>" --writes`, and give it `desktop\icon.ico`.
+
+What the app adds:
+
+- **He stays alive.** The brain runs inside the app and is restarted if it
+  stops. The window is never throttled or discarded while minimised, and if
+  it crashes it reloads and boots straight back up — no click needed.
+- **Tray icon.** Closing the window sends him to the tray, still listening.
+  Right-click for mute, *Start with Windows*, reload, restart brain, logs, quit.
+- **Mute from anywhere.** **Ctrl+Alt+M** mutes or unmutes the microphone,
+  **Ctrl+Alt+J** shows or hides the window. **F11** full screen.
+- **Mute is real.** The microphone is released, not ignored (the Windows mic
+  light goes out), and it stays muted across a reload or a crash.
+
+The app needs ElevenLabs for hearing: the browser's own speech recognition does
+not work outside Chrome. Logs (including memory use every ten minutes) are in
+`%APPDATA%\J.A.R.V.I.S.\logs`. Only one JARVIS can run at a time: the app says
+so if port 8787 is already taken.
 
 ---
 

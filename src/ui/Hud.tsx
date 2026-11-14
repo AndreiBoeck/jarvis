@@ -146,7 +146,7 @@ function DecodeText({ text }: { text: string }) {
 
 /* --------------------------------------------------------------------- hud */
 
-export function Hud() {
+export function Hud({ onToggleMute }: { onToggleMute?: () => void } = {}) {
   const phase = useStore((s) => s.phase)
   const caption = useStore((s) => s.caption)
   const turns = useStore((s) => s.turns)
@@ -158,6 +158,7 @@ export function Hud() {
   const bootNote = useStore((s) => s.bootNote)
   const gestures = useStore((s) => s.gestures)
   const looking = useStore((s) => s.looking)
+  const muted = useStore((s) => s.muted)
   const ui = useStore((s) => s.ui)
 
   // accentFor folds JARVIS's overrides in over the phase colour, so one
@@ -204,6 +205,17 @@ export function Hud() {
                 LISTENING and PROCESSING for the rest of the session. */}
             {phase === 'boot' && bootNote ? bootNote : statusText[phase]}
           </span>
+          {onToggleMute && (
+            <button
+              type="button"
+              className={`mic-toggle${muted ? ' is-muted' : ''}`}
+              onClick={onToggleMute}
+              aria-pressed={muted}
+              title={muted ? 'Unmute the microphone (M)' : 'Mute the microphone (M)'}
+            >
+              {muted ? 'MIC OFF' : 'MIC ON'}
+            </button>
+          )}
         </div>
       </header>
 
@@ -312,7 +324,7 @@ export function Hud() {
 
       <footer className="hud-bottom">
         <span className="hint">
-          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>M</kbd> mute · <kbd>G</kbd> hands
           {voice && (
             <>
               {' · '}
@@ -336,6 +348,11 @@ export function Hud() {
         </div>
       )}
       <GestureGuide live={gestures} />
+      {muted && (
+        <button type="button" className="mic-muted" onClick={onToggleMute}>
+          MICROPHONE MUTED · M TO UNMUTE
+        </button>
+      )}
     </div>
   )
 }

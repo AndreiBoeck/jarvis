@@ -33,6 +33,21 @@ export async function startAnalyser(): Promise<void> {
   buf = new Uint8Array(analyser.frequencyBinCount)
 }
 
+/**
+ * Let go of the microphone entirely: the stream's tracks and the analyser.
+ * The phone app does this when it leaves the screen, so nothing records from
+ * a pocket and the audio pipeline stops holding the phone awake. The next
+ * getMic() opens it afresh.
+ */
+export function releaseMic(): void {
+  stream?.getTracks().forEach((t) => t.stop())
+  stream = null
+  void ctx?.close().catch(() => {})
+  ctx = null
+  analyser = null
+  buf = null
+}
+
 /** 0..1 loudness. Returns 0 before the analyser is up. */
 export function micLevel(): number {
   if (!analyser || !buf) return 0
