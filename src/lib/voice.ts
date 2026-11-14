@@ -4,6 +4,7 @@ import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { echoTuning } from './micProfile'
+import { busyAction, type VoiceMode } from './listenPolicy'
 
 /**
  * The voice loop.
@@ -25,15 +26,8 @@ import { echoTuning } from './micProfile'
  * won't let us put a canceller in front of it.
  */
 
-export type VoiceMode =
-  /** Powered down. Only his name matters. */
-  | 'wake'
-  /** He is expecting you to speak. Everything is a command. */
-  | 'command'
-  /** He is thinking or talking. Anything you say is an interruption. */
-  | 'guard'
-  /** Something is playing that must not be transcribed at all. */
-  | 'deaf'
+// The modes, and which phase maps to which, live in listenPolicy.ts.
+export type { VoiceMode }
 
 export type VoiceHandlers = {
   /** Read fresh on every result, so the app never has to re-subscribe. */
@@ -375,6 +369,40 @@ function drop(why: string) {
   diag.dropped = why
 }
 
+/**
+ * Words that were spoken while he was busy (thinking or using tools), now
+ * transcribed. Only his name at the start lets them through — see
+ * listenPolicy.ts. The phase may have moved on while they were being
+ * transcribed, so it is read again here to decide how to hand them over.
+ */
+function actOnBusy(said: string, h: VoiceHandlers, assemble: Assembler, active: boolean) {
+  const action = busyAction(said)
+  if (action.kind === 'drop') {
+    drop('busy — only "Hey JARVIS" interrupts while he works')
+    return
+  }
+  diag.wakes++
+  diag.dropped = ''
+  diag.accepted++
+  const now = h.mode()
+  if (now === 'deaf') return
+  if (action.kind === 'wake') {
+    // Stop, and answer to his name as from standby: "Sir?", then listen.
+    h.onSpeechStart()
+    h.onWake('')
+    return
+  }
+  if (now === 'wake') {
+    // Already back in standby: the request goes in as if woken with it.
+    h.onWake(action.text)
+    return
+  }
+  // Stop whatever he is doing; the rest of the sentence is the new request,
+  // and may still be continuing in the next segment.
+  h.onSpeechStart()
+  assemble.feed(action.text, active)
+}
+
 if (typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__voice = diag
 }
@@ -426,8 +454,10 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
    * Order is preserved because the drain is single-flight, which matters —
    * "London" arriving before "what's the weather in" is worse than either.
    */
-  const pendingAudio: Blob[] = []
+  const pendingAudio: Array<{ blob: Blob; busy: boolean }> = []
   let draining = false
+  /** The segment being captured began while he was busy. */
+  let segmentBusy = false
 
   /**
    * Transcripts become turns here rather than one-per-segment.
@@ -450,8 +480,12 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
    * machine from 'guard' to 'listening' between the segment starting and its
    * transcript arriving — and the transcript belongs to the mode the user is in
    * now, not the one they interrupted.
+   *
+   * The one exception is `busy`, fixed at capture time: words spoken while he
+   * was working stay under that rule even if he has started answering by the
+   * time they are transcribed.
    */
-  const transcribe = async (blob: Blob) => {
+  const transcribe = async (blob: Blob, busy: boolean) => {
     const mode = h.mode()
     if (mode === 'deaf') return
     const t0 = performance.now()
@@ -487,6 +521,11 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       diag.heard = said
       diag.heardAt = Date.now()
 
+      if (busy) {
+        actOnBusy(said, h, assemble, vad?.meter().speaking ?? false)
+        return
+      }
+
       if (mode === 'wake') {
         if (WAKE.test(said) && Date.now() - lastWake > WAKE_DEBOUNCE) {
           lastWake = Date.now()
@@ -516,7 +555,8 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     draining = true
     try {
       while (pendingAudio.length) {
-        await transcribe(pendingAudio.shift()!)
+        const next = pendingAudio.shift()!
+        await transcribe(next.blob, next.busy)
       }
     } finally {
       draining = false
@@ -528,7 +568,11 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       const mode = h.mode()
       diag.mode = mode
       diag.sessions++
+      segmentBusy = mode === 'busy'
       if (mode === 'deaf') return
+      // While he works, loudness alone interrupts nothing: the segment is
+      // transcribed and only "Hey JARVIS" at its start lets it through.
+      if (mode === 'busy') return
       // Standing down mid-thought throws the thought away with it. Otherwise
       // held text would surface as the opening of the *next* conversation.
       if (mode === 'wake') assemble.cancel()
@@ -548,8 +592,10 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       // In the app, "Hey Jarvis" works only while the app is on screen. Once
       // it is in the background, nothing said near the phone is sent anywhere
       // until a tap or a return to the app — no listening in a pocket.
+      const busy = segmentBusy
+      segmentBusy = false
       if (IS_APP && h.mode() === 'wake' && document.visibilityState !== 'visible') return
-      pendingAudio.push(blob)
+      pendingAudio.push({ blob, busy })
       void drain()
     },
     onLevel: (v) => {
@@ -624,6 +670,8 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   let interim = ''
   let started = false
   let barged = false
+  /** What is buffered began while he was busy: see actOnBusy. */
+  let bufferedBusy = false
   let lastWake = 0
   let lastAlive = Date.now()
   let silenceTimer: ReturnType<typeof setTimeout> | null = null
@@ -654,11 +702,13 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     interim = ''
     started = false
     barged = false
+    bufferedBusy = false
   }
 
   const emit = () => {
     const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     const mode = h.mode()
+    const busy = bufferedBusy
     reset()
     if (!text || mode === 'deaf') return
     if (isEcho(text, speakingNow())) {
@@ -667,6 +717,10 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     }
     diag.heard = text
     diag.heardAt = Date.now()
+    if (busy) {
+      actOnBusy(text, h, assemble, false)
+      return
+    }
     if (mode === 'wake') {
       assemble.cancel()
       if (WAKE.test(text) && Date.now() - lastWake > WAKE_DEBOUNCE) {
@@ -712,6 +766,18 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     if (!heard) return
     if (isEcho(`${fresh} ${interim}`, speakingNow())) {
       interim = ''
+      return
+    }
+
+    // He is working. No barge-in and no caption: gather the words quietly
+    // until the recogniser goes quiet, then let only "Hey JARVIS" through. A
+    // sentence begun while busy stays busy even if he starts answering
+    // mid-way, rather than turning into an interruption half-way through.
+    if (mode === 'busy' || bufferedBusy) {
+      bufferedBusy = true
+      settled += fresh
+      if (settled.length > 400) settled = settled.slice(-400)
+      bumpSilence()
       return
     }
 

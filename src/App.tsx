@@ -6,6 +6,7 @@ import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
 import { useStore } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
+import { modeForPhase } from './lib/listenPolicy'
 import { createSpeaker, cycleVoice, currentVoiceName } from './lib/tts'
 import * as sfx from './lib/sfx'
 import * as music from './lib/music'
@@ -379,20 +380,7 @@ export default function App() {
   // -- voice events ---------------------------------------------------------
 
   /** What the voice loop should do with what it hears, derived from phase. */
-  const mode = (): VoiceMode => {
-    switch (store.getState().phase) {
-      case 'offline':
-      case 'boot':
-        return 'deaf'
-      case 'dormant':
-        return 'wake'
-      case 'waking':
-      case 'listening':
-        return 'command'
-      default:
-        return 'guard' // thinking, tooling, speaking
-    }
-  }
+  const mode = (): VoiceMode => modeForPhase(store.getState().phase)
 
   const onWake = (trailing: string) => {
     const phase = store.getState().phase
