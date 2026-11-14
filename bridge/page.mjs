@@ -429,8 +429,8 @@ export async function renderPage(url, mode, bridgeOrigin, mediaKey) {
   if (scriptOnly(page.text)) {
     throw proxyError(
       422,
-      'It draws itself with its own scripts, which a blade does not run — so it ' +
-        'would be blank here. A map or a route has its own blade.',
+      'It draws itself with its own scripts, which an article blade does not run — ' +
+        'so it would be blank here. Ask JARVIS to open it in the live browser instead.',
     )
   }
 
@@ -561,7 +561,8 @@ export async function probeUrl(url) {
         scriptOnly: true,
         leadImage: lead || null,
         reason:
-          'the page is drawn by its own scripts; as an article blade it would be blank',
+          'the page is drawn by its own scripts; as an article blade it would be blank. ' +
+          'Open it as kind "browser" (a map or route: kind "map").',
         suggestion: 'not_showable',
       }
     }

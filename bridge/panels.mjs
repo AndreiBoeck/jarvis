@@ -2,6 +2,8 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { probeUrl } from './page.mjs'
 import { TRAVEL, mapEmbed, mapFromUrl } from './maps.mjs'
+import { SCREEN_KINDS, fillTemplate, screenStore } from './screens.mjs'
+import { liveUrlProblem } from './livebrowser.mjs'
 
 /**
  * The `display` tool — JARVIS's screen.
@@ -274,6 +276,14 @@ Choosing what to open:
             an article: Maps draws itself with scripts, and an article blade of
             it is blank. A Google Maps link passed as an article is turned into
             a map for you.
+  browser — a real browser tab, running on the user's PC and streamed live
+            onto the blade: the page's own scripts run, and the user clicks,
+            scrolls and types into it from the blade (a tap on the phone is a
+            click). Use it for anything that only works with its scripts —
+            web apps, dashboards that draw themselves, sites probe_url calls
+            \`not_showable\`, or when the user wants to use the page rather
+            than read it. Give \`url\`. It is a separate browser profile, not
+            their Chrome: they may need to sign in once inside it.
   markup  — your own composed HTML, in the same .hud-* system the display tool
             uses, when none of the above is the shape of the answer.
   camera  — the live view from the user's camera, on screen. Open it when they
@@ -298,14 +308,14 @@ const bladeSchema = {
     .string()
     .describe('Two to four words naming what this is, e.g. "REUTERS" or "MARK VII".'),
   kind: z
-    .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'markup', 'camera'])
+    .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'browser', 'markup', 'camera'])
     .describe('What is being opened. See the tool description.'),
   url: z
     .string()
     .optional()
     .catch(undefined)
     .describe(
-      'The address, for article / image / video / embed. Use a URL that ' +
+      'The address, for article / image / video / embed / browser. Use a URL that ' +
         'appeared verbatim in a tool result — never one you assembled yourself.',
     ),
   images: z
@@ -351,6 +361,58 @@ const bladeSchema = {
   screen: screenField(),
 }
 
+const SCREEN_DESCRIPTION = `Screens you made, kept by name so you can open them again.
+
+A screen is a blade you designed once and reuse: "make me a screen for the
+solar panels" today, "open the solar screen" any day after, with that day's
+figures in it. They are stored on the user's PC and survive restarts.
+
+Actions:
+  list    — the saved screens: name, kind, description, and a template's fields.
+            Check it before making one: reuse beats a near-duplicate.
+  save    — a new screen: \`name\`, \`description\` (what it is for), \`kind\`,
+            \`html\`. Add \`data\` to open it at once.
+  open    — open a saved screen on the blades, with \`data\` for its fields.
+  update  — change a saved screen's \`html\`, \`description\` or \`kind\`.
+  forget  — delete it, only when the user asks.
+
+Kinds:
+  template — the default, and right almost every time. Markup in the same .hud-*
+             design system as \`display\`, with {{field}} holes that \`data\`
+             fills on every open, e.g. <span class="hud-metric">{{kwh}}</span>.
+             Values are escaped: data carries text, never markup. No scripts.
+  app      — a whole HTML document with its own <script>: something the user
+             interacts with — a calculator, a timer, a converter, a game. ONLY
+             when the user explicitly asked for a screen that does something;
+             never to present information, which is what a template is for. It
+             runs sealed off: no network (fetch, XHR and WebSocket are all
+             blocked), no external images or fonts (use inline SVG or data:
+             URLs), no access to the interface. Its data arrives as
+             window.JARVIS_DATA and a \`jarvis:data\` event on window. Style it
+             yourself: dark, transparent background, cyan (#7fe8ff) on near-black
+             text, monospace, to match the interface.`
+
+const screenSchema = {
+  action: z.enum(['list', 'save', 'open', 'update', 'forget']).describe('What to do.'),
+  name: z.string().optional().catch(undefined).describe('The screen, by name.'),
+  description: z.string().optional().catch(undefined).describe('What the screen is for, one line.'),
+  kind: z
+    .enum(SCREEN_KINDS)
+    .optional()
+    .catch(undefined)
+    .describe('template (default) or app — see the description.'),
+  html: z.string().optional().catch(undefined).describe('The screen itself, for save and update.'),
+  data: z
+    .record(z.string(), z.any())
+    .optional()
+    .catch(undefined)
+    .describe('Values for this opening: a template\'s {{fields}}, or what an app reads.'),
+  title: z.string().optional().catch(undefined).describe('Blade title; defaults to the screen name.'),
+  size: z.enum(['compact', 'tall', 'wide', 'full']).optional().catch(undefined),
+  hold: z.enum(['turn', 'sticky']).optional().catch(undefined),
+  screen: screenField(),
+}
+
 const PROBE_DESCRIPTION = `Find out what is actually at a URL before showing it.
 
 Returns what it is, whether it can be reached at all, and — for a web page —
@@ -382,7 +444,7 @@ const NO_CAMERA_DESCRIPTION = BLADE_DESCRIPTION.replace(CAMERA_BLADE, '')
 const noCameraSchema = {
   ...bladeSchema,
   kind: z
-    .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'markup'])
+    .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'browser', 'markup'])
     .describe('What is being opened. See the tool description.'),
 }
 
@@ -392,7 +454,12 @@ const noCameraSchema = {
  *                   named screen ('here' | 'pc' | 'phone'); `label` says where
  *                   it went (' on the PC'), `error` why it could not.
  */
-export function displayServer(emit, emitBlade, { camera = true } = {}) {
+export function displayServer(
+  emit,
+  emitBlade,
+  { camera = true, live = true, screens = screenStore() } = {},
+) {
+  const newId = (p) => `${p}${Date.now().toString(36)}-${(seq++).toString(36)}`
   return createSdkMcpServer({
     name: 'jarvis',
     version: '1.0.0',
@@ -475,8 +542,13 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
         if (kind === 'markup' && !String(args.html ?? '').trim()) {
           return refuse('Not opened: kind "markup" needs an `html` body.')
         }
-        if (['article', 'image', 'video', 'embed'].includes(kind) && !url) {
+        if (['article', 'image', 'video', 'embed', 'browser'].includes(kind) && !url) {
           return refuse(`Not opened: kind "${kind}" needs a \`url\`.`)
+        }
+        if (kind === 'browser') {
+          if (!live) return refuse('Not opened: the live browser is switched off on this PC.')
+          const problem = liveUrlProblem(url)
+          if (problem) return refuse(`Not opened: ${problem}`)
         }
 
         // A Google Maps link as an article would open blank: Maps draws itself
@@ -519,7 +591,9 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
           // anything meant to be looked at. Getting this wrong is the difference
           // between an article you can follow and one in a letterbox.
           size: args.size ?? (kind === 'article' ? 'tall' : 'wide'),
-          hold: args.hold ?? 'turn',
+          // A page being used stays until it is closed: the user talking to
+          // JARVIS mid-form is not a reason to throw the form away.
+          hold: args.hold ?? (kind === 'browser' ? 'sticky' : 'turn'),
         }
         const placed = emitBlade(blade, args.screen ?? 'here')
         if (placed.error) return refuse(placed.error)
@@ -527,6 +601,95 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
           content: [
             { type: 'text', text: `Open on the blades${placed.label} as "${blade.title}".${mapNote}` },
           ],
+        }
+      }),
+
+      tool('screen', SCREEN_DESCRIPTION, screenSchema, async (args) => {
+        const ok = (text) => ({ content: [{ type: 'text', text }] })
+        const name = String(args.name ?? '').trim()
+
+        /** Put a saved screen on the blades. */
+        const open = (saved) => {
+          const base = {
+            id: newId('s'),
+            title: String(args.title ?? '').trim() || saved.name.toUpperCase(),
+            size: args.size ?? (saved.kind === 'app' ? 'wide' : 'compact'),
+            hold: args.hold ?? 'sticky',
+          }
+          const blade =
+            saved.kind === 'app'
+              ? {
+                  ...base,
+                  kind: 'screen',
+                  // The revision busts any cached copy after an update.
+                  url: `/screen?id=${encodeURIComponent(saved.id)}&rev=${encodeURIComponent(saved.updated)}`,
+                  data: args.data ?? null,
+                }
+              : { ...base, kind: 'markup', html: fillTemplate(saved.html, args.data ?? {}) }
+          const placed = emitBlade(blade, args.screen ?? 'here')
+          if (placed.error) return refuse(placed.error)
+          const missing =
+            saved.kind === 'template'
+              ? saved.fields.filter((f) => !Object.hasOwn(args.data ?? {}, f))
+              : []
+          return ok(
+            `Screen "${saved.name}" open on the blades${placed.label}.` +
+              (missing.length ? ` No value given for: ${missing.join(', ')} (shown as —).` : ''),
+          )
+        }
+
+        try {
+          switch (args.action) {
+            case 'list': {
+              const all = screens.list()
+              if (!all.length) return ok('No saved screens yet.')
+              return ok(
+                all
+                  .map(
+                    (s) =>
+                      `- ${s.name} [${s.kind}]${s.description ? ` — ${s.description}` : ''}` +
+                      (s.fields?.length ? ` (fields: ${s.fields.join(', ')})` : ''),
+                  )
+                  .join('\n'),
+              )
+            }
+            case 'save': {
+              const entry = screens.save({
+                name,
+                description: args.description ?? '',
+                kind: args.kind ?? 'template',
+                html: args.html,
+              })
+              const note =
+                `Saved screen "${entry.name}" (${entry.kind})` +
+                (entry.fields.length ? ` with fields: ${entry.fields.join(', ')}` : '') +
+                '.'
+              if (args.data === undefined) return ok(note)
+              const opened = open(screens.get(entry.id))
+              return opened.isError ? opened : ok(`${note} ${opened.content[0].text}`)
+            }
+            case 'open': {
+              const saved = screens.get(name)
+              if (!saved) return refuse(`No screen called "${name}". Call screen with action "list".`)
+              return open(saved)
+            }
+            case 'update': {
+              const entry = screens.update(name, {
+                description: args.description,
+                kind: args.kind,
+                html: args.html,
+              })
+              return ok(`Updated screen "${entry.name}".`)
+            }
+            case 'forget':
+              return screens.forget(name)
+                ? ok(`Forgot screen "${name}".`)
+                : refuse(`No screen called "${name}".`)
+            default:
+              return refuse('Unknown action.')
+          }
+        } catch (err) {
+          return refuse(`Not done: ${err?.message ?? err}`)
         }
       }),
 

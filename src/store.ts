@@ -39,9 +39,26 @@ export type Panel = {
 export type Blade = {
   id: string
   title: string
-  kind: 'article' | 'image' | 'gallery' | 'video' | 'embed' | 'map' | 'markup' | 'camera'
-  /** article / image / video / embed / map (a Google Maps embed URL). */
+  kind:
+    | 'article'
+    | 'image'
+    | 'gallery'
+    | 'video'
+    | 'embed'
+    | 'map'
+    | 'markup'
+    | 'camera'
+    /** A saved app screen, served sandboxed by the bridge at /screen. */
+    | 'screen'
+    /** A real browser tab on the PC, streamed live (bridge/livebrowser.mjs). */
+    | 'browser'
+  /**
+   * article / image / video / embed / map (a Google Maps embed URL) / browser
+   * (the page to open) / screen (a bridge path, /screen?id=…).
+   */
   url?: string
+  /** screen: the values handed to it by postMessage. */
+  data?: unknown
   /** gallery. */
   images?: string[]
   /** markup — sanitised exactly as a panel body is. */

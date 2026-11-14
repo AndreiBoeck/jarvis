@@ -1692,6 +1692,75 @@ kbd {
 
 .bl-markup { padding: 14px 16px; text-transform: none; letter-spacing: normal }
 
+/* The live browser: an address bar over a picture of the page. */
+.bl-live {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+.bl-live-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.bl-live-bar .bl-btn:disabled { opacity: 0.3; cursor: default }
+.bl-live-url,
+.bl-live-type {
+  pointer-events: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+  color: color-mix(in srgb, var(--accent) 80%, white);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  padding: 4px 8px;
+  outline: none;
+}
+.bl-live-url:focus,
+.bl-live-type:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent) }
+.bl-live-type { flex: 0 1 30% }
+.bl-live-surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  outline: none;
+  cursor: default;
+  /* The page scrolls itself; the phone must not pan or zoom the interface. */
+  touch-action: none;
+  background: rgba(0, 0, 0, 0.35);
+}
+.bl-live-surface:focus-visible { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) }
+.bl-live-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+.bl-live-over { position: absolute; inset: 0; margin: 0 }
+.bl-live-err {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: normal;
+  background: rgba(0, 0, 0, 0.7);
+  color: #ffb4a8;
+}
+
 .bl-note {
   padding: 22px;
   opacity: 0.6;

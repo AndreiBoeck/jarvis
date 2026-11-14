@@ -60,6 +60,8 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
+import { APP_CSP, appDocument, screenStore } from './screens.mjs'
+import { LiveBrowser } from './livebrowser.mjs'
 import {
   builtinTools,
   checkToolUse,
@@ -460,7 +462,14 @@ const PROMPT_BLADES = `The blades — the ONLY surface:
 - A map, a route or directions is always the \`map\` blade, never an article:
   Google Maps and other web apps draw themselves with scripts, and an article
   blade of them is blank. When probe_url says \`not_showable\`, do not open it
-  as an article; say what you found, or take a screenshot and show that.
+  as an article: open it as kind \`browser\`, a real tab streamed onto the
+  blade, which runs the page's scripts and takes the user's clicks and typing.
+- \`browser\` is also right when the user wants to USE a page — a web app, a
+  form, a dashboard — rather than read it.
+- \`screen\` keeps blades you design so you can open them again by name. Check
+  \`screen list\` before designing something you may already have made. Make
+  an \`app\` screen (with scripts) only when the user asks for a screen that
+  does something; information is always a template.
 - Never read a blade aloud. Say what it means and let them look.
 
 `
@@ -948,6 +957,24 @@ function corsFor(req) {
 // One HTTP server for both the speech proxy and the WebSocket upgrade.
 const http = await import('node:http')
 
+/** Screens JARVIS made and kept (~/.jarvis/screens). */
+const savedScreens = screenStore()
+
+/**
+ * The live browser: real pages, scripts and all, streamed onto a blade. One
+ * Chrome for the whole bridge, started on first use. See livebrowser.mjs.
+ */
+const LIVE_ON = !DISABLED.has('live') && !DISABLED.has('browser')
+const live = LIVE_ON ? new LiveBrowser({ bridgePort: PORT }) : null
+if (live) {
+  for (const sig of ['exit', 'SIGINT', 'SIGTERM']) {
+    process.once(sig, () => {
+      live.shutdown()
+      if (sig !== 'exit') process.exit(0)
+    })
+  }
+}
+
 const handleRequest = async (req, res) => {
   const origin = req.headers.origin
 
@@ -1131,6 +1158,26 @@ const handleRequest = async (req, res) => {
          }`,
       )
     }
+  }
+
+  // A saved app screen (screens.mjs), framed by the interface with
+  // sandbox="allow-scripts" and no allow-same-origin. Its CSP lets its own
+  // inline code run and nothing leave: no fetch, no sockets, no frames.
+  if (req.method === 'GET' && route === '/screen') {
+    const saved = savedScreens.get(new URL(req.url, 'http://x').searchParams.get('id') ?? '')
+    if (!saved || saved.kind !== 'app') {
+      res.writeHead(404, { ...cors, 'content-type': 'text/plain' })
+      return res.end('no such screen')
+    }
+    res.writeHead(200, {
+      ...cors,
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': APP_CSP,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+    })
+    return res.end(appDocument(saved.html))
   }
 
   if (req.method === 'POST' && req.url === '/tts') {
@@ -2076,7 +2123,7 @@ wss.on('connection', (socket, req) => {
         jarvis: displayServer(
           (panel) => send({ type: 'panel', panel }),
           routeBlade,
-          { camera: !DISABLED.has('camera') },
+          { camera: !DISABLED.has('camera'), live: LIVE_ON, screens: savedScreens },
         ),
         // The interface controls, on the same socket. A separate key because
         // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
@@ -2351,6 +2398,9 @@ wss.on('connection', (socket, req) => {
     }
   })()
 
+  /** This screen, as the live browser sees it: where its frames go. */
+  const liveOwner = { send, buffered: () => socket.bufferedAmount }
+
   socket.on('message', (raw) => {
     let msg
     try {
@@ -2420,6 +2470,17 @@ wss.on('connection', (socket, req) => {
       })
     }
 
+    // The live browser blade: clicks, keys and navigation in; frames out, to
+    // this screen alone. Over this socket because it is already authenticated.
+    if (msg.type === 'live' && typeof msg.op === 'string') {
+      if (!live) {
+        send({ type: 'live', op: 'error', id: msg.id, message: 'The live browser is switched off.' })
+      } else {
+        void live.handle(liveOwner, msg)
+      }
+      return
+    }
+
     if (msg.type === 'reply' && typeof msg.id === 'string') {
       const slot = waiting.get(msg.id)
       if (slot) {
@@ -2452,6 +2513,7 @@ wss.on('connection', (socket, req) => {
 
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
+    live?.dropOwner(liveOwner)
     interfaces.delete(send)
     if (mediaKey) dropMediaKey(mediaKey)
     screens.delete(screenId)

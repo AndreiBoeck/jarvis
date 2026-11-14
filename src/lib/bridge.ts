@@ -41,6 +41,22 @@ type Frame = {
 }
 
 /**
+ * The live browser blade's traffic: frames and page state out of the bridge,
+ * clicks, keys and navigation back. Out of band, like blades, and passed
+ * through untyped — src/lib/live.ts owns the shape.
+ */
+let onLive: ((msg: Record<string, unknown>) => void) | null = null
+export function watchLive(fn: (msg: Record<string, unknown>) => void) {
+  onLive = fn
+}
+/** Send one live-browser message, if the socket is up. False if it is not. */
+export function sendLive(msg: Record<string, unknown>): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false
+  socket.send(JSON.stringify({ ...msg, type: 'live' }))
+  return true
+}
+
+/**
  * A watch speaking up on its own — a condition the user asked to hear about
  * has come true. Nobody asked a question, so it arrives outside any turn.
  */
@@ -183,6 +199,8 @@ function scheduleReconnect() {
  * warmBridge() call leaked another listener onto the same socket.
  */
 function dispatch(ws: WebSocket) {
+  // Once per socket: open live-browser blades claim their tabs on it.
+  let liveClaimed = false
   ws.addEventListener('message', (e: MessageEvent) => {
     let msg: Frame
     try {
@@ -202,6 +220,10 @@ function dispatch(ws: WebSocket) {
         .filter(Boolean)
       onServers?.(servers)
       firstReady.resolve()
+      if (!liveClaimed) {
+        liveClaimed = true
+        onLive?.({ op: 'ready' })
+      }
     } else if (msg.type === 'panel' && msg.panel) {
       onPanel?.(msg.panel)
     } else if (msg.type === 'blade' && msg.blade) {
@@ -230,6 +252,8 @@ function dispatch(ws: WebSocket) {
           .then(reply)
           .catch((err) => reply({ error: String(err?.message ?? err) }))
       }
+    } else if (msg.type === 'live' && msg.op) {
+      onLive?.(msg as unknown as Record<string, unknown>)
     } else if (msg.type === 'ui' && msg.op) {
       // A `ui` frame with no args is normal — reset and clear take none — so an
       // absent args object is an empty one, not a reason to drop the command.

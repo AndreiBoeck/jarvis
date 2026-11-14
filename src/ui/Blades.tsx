@@ -1,10 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useStore, type Blade } from '../store'
-import { BRIDGE_HTTP_URL, withMediaKey } from '../config'
+import { BRIDGE_HTTP_URL, IS_APP, withMediaKey } from '../config'
 import { sanitisePanelHtml } from './sanitise'
 import { frameSpan, peaceScroll, pinchCount } from '../lib/hands'
 import * as camera from '../lib/camera'
+import { sendLive, subscribeLive } from '../lib/live'
+import { addressToUrl, modsOf, toPage, touchKind, wheelPixels } from '../lib/livePointer'
 
 /**
  * The blades.
@@ -178,8 +180,351 @@ const CameraView = memo(function CameraView() {
   return <video ref={el} className="bl-camera" autoPlay playsInline muted />
 })
 
+/**
+ * A saved app screen (bridge/screens.mjs): the model's own HTML and JS, served
+ * by the bridge under a CSP that lets nothing leave the document, and framed
+ * here with allow-scripts and no allow-same-origin — an opaque origin that can
+ * reach neither this page, nor the socket, nor the token. Its data goes in by
+ * postMessage, the only door it has.
+ */
+const ScreenView = memo(function ScreenView({ blade }: { blade: Blade }) {
+  const frame = useRef<HTMLIFrameElement>(null)
+  const post = () => frame.current?.contentWindow?.postMessage({ jarvis: 'data', data: blade.data ?? null }, '*')
+  useEffect(post, [blade.data])
+  if (!blade.url?.startsWith('/screen?')) return <p className="bl-note">That screen could not be shown.</p>
+  return (
+    <iframe
+      ref={frame}
+      className="bl-frame"
+      src={withMediaKey(`${BRIDGE_HTTP_URL}${blade.url}`)}
+      sandbox="allow-scripts"
+      referrerPolicy="no-referrer"
+      onLoad={post}
+      title={blade.title}
+    />
+  )
+})
+
+type LiveState = {
+  url: string
+  title: string
+  canBack: boolean
+  canForward: boolean
+  loading: boolean
+  error: string
+  closed: boolean
+  started: boolean
+}
+
+/**
+ * A real browser tab on the PC, on the blade (bridge/livebrowser.mjs).
+ *
+ * The page runs in Chrome on the PC with its own scripts and its own origin;
+ * what arrives here is a JPEG each time it changes, and what goes back is the
+ * user's clicks, wheel and keys, over the interface's own socket. A mouse is a
+ * mouse. A finger taps to click and drags to scroll, which is what a phone
+ * user expects, and hand gestures arrive as touches and behave the same way.
+ *
+ * Opening and closing the tab follow the blade, not this component: an
+ * unmount (another blade thrown full screen) only pauses the stream, and the
+ * tab is closed when the blade leaves the store — see `Blades` below.
+ */
+const LiveView = memo(function LiveView({ blade }: { blade: Blade }) {
+  const id = blade.id
+  const surface = useRef<HTMLDivElement>(null)
+  const img = useRef<HTMLImageElement>(null)
+  const frameSize = useRef({ w: 0, h: 0 })
+  const started = useRef(false)
+  const [st, setSt] = useState<LiveState>({
+    url: blade.url ?? '',
+    title: '',
+    canBack: false,
+    canForward: false,
+    loading: true,
+    error: '',
+    closed: false,
+    started: false,
+  })
+  const [addr, setAddr] = useState<string | null>(null)
+
+  useEffect(() => {
+    const el = surface.current
+    if (!el) return
+    const size = () => {
+      const r = el.getBoundingClientRect()
+      return { w: Math.round(r.width), h: Math.round(r.height), mobile: IS_APP }
+    }
+    const open = () => sendLive({ op: 'open', id, url: blade.url, ...size() })
+    const off = subscribeLive(id, (m) => {
+      if (m.op === 'ready') return void open()
+      if (m.op === 'frame' && m.data && img.current) {
+        img.current.src = `data:image/jpeg;base64,${m.data}`
+        frameSize.current = { w: m.w ?? 0, h: m.h ?? 0 }
+        if (!started.current) {
+          started.current = true
+          setSt((s) => ({ ...s, started: true }))
+        }
+        return
+      }
+      if (m.op === 'state') {
+        setSt((s) => ({
+          ...s,
+          url: m.url ?? s.url,
+          title: m.title ?? s.title,
+          canBack: m.canBack ?? s.canBack,
+          canForward: m.canForward ?? s.canForward,
+          loading: m.loading ?? s.loading,
+          error: m.url ? '' : s.error,
+        }))
+        return
+      }
+      if (m.op === 'error') return setSt((s) => ({ ...s, error: m.message ?? 'error' }))
+      if (m.op === 'closed') return setSt((s) => ({ ...s, closed: true }))
+    })
+    open()
+
+    // The page is laid out at the surface's size, so a resized blade re-lays
+    // the page out rather than scaling a picture of it.
+    let timer = 0
+    let last = ''
+    const ro = new ResizeObserver(() => {
+      clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        const s = size()
+        const key = `${s.w}x${s.h}`
+        if (key === last || s.w < 50 || s.h < 50) return
+        last = key
+        sendLive({ op: 'resize', id, ...s })
+      }, 220)
+    })
+    ro.observe(el)
+
+    // Keys go to the page while the surface has focus, and nowhere else:
+    // stopped here, on the element, so E, X, M and Space reach the page rather
+    // than closing the blade or muting the microphone.
+    const key = (event: 'down' | 'up') => (e: KeyboardEvent) => {
+      e.stopPropagation()
+      // Let the browser keep its own reload/devtools chords on desktop.
+      if (e.metaKey && (e.key === 'r' || e.key === 'R')) return
+      e.preventDefault()
+      sendLive({ op: 'key', id, event, key: e.key, code: e.code, keyCode: e.keyCode, mods: modsOf(e) })
+    }
+    const down = key('down')
+    const up = key('up')
+    const paste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text/plain')
+      if (!text) return
+      e.preventDefault()
+      e.stopPropagation()
+      sendLive({ op: 'text', id, text })
+    }
+    // Native and non-passive, or preventDefault would not stop the blade
+    // body (or the page behind it) scrolling as well.
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const p = toPage(e.clientX, e.clientY, el.getBoundingClientRect(), frameSize.current.w, frameSize.current.h)
+      if (!p) return
+      sendLive({
+        op: 'wheel',
+        id,
+        ...p,
+        dx: wheelPixels(e.deltaX, e.deltaMode),
+        dy: wheelPixels(e.deltaY, e.deltaMode),
+        mods: modsOf(e),
+      })
+    }
+    el.addEventListener('keydown', down)
+    el.addEventListener('keyup', up)
+    el.addEventListener('paste', paste)
+    el.addEventListener('wheel', wheel, { passive: false })
+
+    return () => {
+      off()
+      ro.disconnect()
+      clearTimeout(timer)
+      el.removeEventListener('keydown', down)
+      el.removeEventListener('keyup', up)
+      el.removeEventListener('paste', paste)
+      el.removeEventListener('wheel', wheel)
+      sendLive({ op: 'pause', id })
+    }
+    // blade.url is the page it opened on; later navigation is the page's own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
+
+  /** Where a pointer is on the page, or null in the letterbox. */
+  const at = (e: { clientX: number; clientY: number }) => {
+    const el = surface.current
+    if (!el) return null
+    return toPage(e.clientX, e.clientY, el.getBoundingClientRect(), frameSize.current.w, frameSize.current.h)
+  }
+
+  const touch = useRef<{ x: number; y: number; lastY: number; lastX: number; drag: boolean } | null>(null)
+  const clicks = useRef({ t: 0, x: 0, y: 0, n: 0 })
+  const moveQueued = useRef<{ x: number; y: number; held: boolean } | null>(null)
+  const moveRaf = useRef(0)
+
+  const onDown = (e: React.PointerEvent) => {
+    // Not a grab: on this blade a touch belongs to the page (the header still
+    // moves it). A mouse press is never a grab, so it may bubble and focus.
+    if (e.pointerType === 'touch') e.stopPropagation()
+    surface.current?.focus({ preventScroll: true })
+    try {
+      ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    } catch {
+      // synthetic pointers (hand gestures) have nothing to capture
+    }
+    if (e.pointerType === 'touch') {
+      touch.current = { x: e.clientX, y: e.clientY, lastX: e.clientX, lastY: e.clientY, drag: false }
+      return
+    }
+    const p = at(e)
+    if (!p) return
+    const c = clicks.current
+    const now = performance.now()
+    c.n = now - c.t < 450 && Math.hypot(p.x - c.x, p.y - c.y) < 6 ? Math.min(3, c.n + 1) : 1
+    Object.assign(c, { t: now, x: p.x, y: p.y })
+    const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left'
+    sendLive({ op: 'mouse', id, event: 'down', ...p, button, clicks: c.n, mods: modsOf(e) })
+  }
+
+  const onMove = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') {
+      const t = touch.current
+      if (!t) return
+      if (!t.drag && touchKind(e.clientX - t.x, e.clientY - t.y) === 'drag') t.drag = true
+      if (!t.drag) return
+      const p = at({ clientX: t.x, clientY: t.y })
+      // The page follows the finger: dragging up scrolls down.
+      if (p) sendLive({ op: 'wheel', id, ...p, dx: t.lastX - e.clientX, dy: t.lastY - e.clientY })
+      t.lastX = e.clientX
+      t.lastY = e.clientY
+      return
+    }
+    const p = at(e)
+    if (!p) return
+    // One move per frame is plenty, and a hover storm would back the socket up.
+    moveQueued.current = { ...p, held: e.buttons > 0 }
+    if (moveRaf.current) return
+    moveRaf.current = requestAnimationFrame(() => {
+      moveRaf.current = 0
+      const q = moveQueued.current
+      if (q) sendLive({ op: 'mouse', id, event: 'move', ...q })
+    })
+  }
+
+  const onUp = (e: React.PointerEvent) => {
+    e.stopPropagation()
+    if (e.pointerType === 'touch') {
+      const t = touch.current
+      touch.current = null
+      if (!t || t.drag) return
+      const p = at({ clientX: t.x, clientY: t.y })
+      if (!p) return
+      sendLive({ op: 'mouse', id, event: 'down', ...p, button: 'left', clicks: 1 })
+      sendLive({ op: 'mouse', id, event: 'up', ...p, button: 'left', clicks: 1 })
+      return
+    }
+    const p = at(e) ?? { x: clicks.current.x, y: clicks.current.y }
+    const button = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left'
+    sendLive({ op: 'mouse', id, event: 'up', ...p, button, clicks: clicks.current.n, mods: modsOf(e) })
+  }
+
+  const nav = (action: 'back' | 'forward' | 'reload' | 'go', url?: string) =>
+    sendLive({ op: 'nav', id, action, url })
+
+  return (
+    <div className="bl-live">
+      <div className="bl-live-bar" onPointerDown={(e) => e.stopPropagation()}>
+        <button className="bl-btn" disabled={!st.canBack} onClick={() => nav('back')} title="Back">
+          ←
+        </button>
+        <button className="bl-btn" disabled={!st.canForward} onClick={() => nav('forward')} title="Forward">
+          →
+        </button>
+        <button className="bl-btn" onClick={() => nav('reload')} title="Reload">
+          {st.loading ? '✕' : '⟳'}
+        </button>
+        <input
+          className="bl-live-url"
+          value={addr ?? st.url}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          inputMode="url"
+          onFocus={(e) => {
+            setAddr(st.url)
+            e.currentTarget.select()
+          }}
+          onBlur={() => setAddr(null)}
+          onChange={(e) => setAddr(e.target.value)}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Enter') {
+              const url = addressToUrl(addr ?? '')
+              if (url) nav('go', url)
+              setAddr(null)
+              e.currentTarget.blur()
+            } else if (e.key === 'Escape') {
+              setAddr(null)
+              e.currentTarget.blur()
+            }
+          }}
+        />
+        {IS_APP && (
+          // A phone has no keyboard until a text field has focus, and the
+          // field that needs it is inside a picture. This one stands in: what
+          // is typed here is typed into the page.
+          <input
+            className="bl-live-type"
+            placeholder="type…"
+            autoCapitalize="off"
+            onChange={(e) => {
+              const text = e.target.value
+              if (text) sendLive({ op: 'text', id, text })
+              e.target.value = ''
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter' || (e.key === 'Backspace' && !e.currentTarget.value)) {
+                e.preventDefault()
+                sendLive({ op: 'key', id, event: 'down', key: e.key, code: e.key, keyCode: e.key === 'Enter' ? 13 : 8 })
+                sendLive({ op: 'key', id, event: 'up', key: e.key, code: e.key, keyCode: e.key === 'Enter' ? 13 : 8 })
+              }
+            }}
+          />
+        )}
+      </div>
+      <div
+        ref={surface}
+        className="bl-live-surface"
+        tabIndex={0}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={() => {
+          touch.current = null
+        }}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <img ref={img} className="bl-live-frame" alt="" draggable={false} />
+        {st.closed ? (
+          <p className="bl-note bl-live-over">The browser tab was closed.</p>
+        ) : !st.started ? (
+          <p className="bl-note bl-live-over">{st.error || 'Opening the page…'}</p>
+        ) : st.error ? (
+          <p className="bl-live-err">{st.error}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+})
+
 const Body = memo(function Body({ blade }: { blade: Blade }) {
   if (blade.kind === 'camera') return <CameraView />
+  if (blade.kind === 'browser' && blade.url) return <LiveView blade={blade} />
+  if (blade.kind === 'screen') return <ScreenView blade={blade} />
 
   if (blade.kind === 'article' && blade.url) {
     return (
@@ -645,6 +990,19 @@ export function Blades() {
   }, [blades, focusedBlade])
 
   const front = ordered[0]
+
+  /**
+   * A live browser blade that leaves the store — closed, cleared, or pushed off
+   * the back of the stack — closes its tab on the PC. Watched here rather than
+   * on unmount, because a blade is also unmounted while another one is full
+   * screen, and that must only pause it.
+   */
+  const liveIds = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const now = new Set(blades.filter((b) => b.kind === 'browser').map((b) => b.id))
+    for (const id of liveIds.current) if (!now.has(id)) sendLive({ op: 'close', id })
+    liveIds.current = now
+  }, [blades])
 
   const cycle = useCallback(
     (by: number) => {

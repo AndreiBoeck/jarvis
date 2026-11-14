@@ -190,7 +190,7 @@ export function dropMediaKey(key) {
 }
 
 /** The routes a media key may open. */
-export const MEDIA_ROUTES = ['/file', '/img', '/media', '/page']
+export const MEDIA_ROUTES = ['/file', '/img', '/media', '/page', '/screen']
 
 /** The device behind a media key, if the key is live and the device still paired. */
 export function deviceForMediaKey(key, file = devicesFile()) {
