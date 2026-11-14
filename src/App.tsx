@@ -759,10 +759,15 @@ export default function App() {
    * Deliberately silent about failure. If the microphone is refused, or has not
    * been granted yet, the button is still right there; announcing an error
    * about a feature nobody asked for would be worse than quietly doing without.
+   *
+   * Not in the phone app. Its start screen says "tap to power up" — the phone
+   * is in a hand, the screen is right there — and a microphone open before
+   * anyone has touched it is the last thing a phone should have: it recorded
+   * from a pocket, and kept recording once the app left the screen.
    */
   const muted = useStore((s) => s.muted)
   useEffect(() => {
-    if (phase !== 'offline' || muted) return
+    if (IS_APP || phase !== 'offline' || muted) return
     let live: { stop: () => void } | null = null
     let gone = false
     void listenForClap(() => {

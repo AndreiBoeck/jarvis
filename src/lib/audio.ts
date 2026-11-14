@@ -6,11 +6,10 @@
 
 import { IS_APP } from '../config'
 import { micConstraints } from './micProfile'
+import { createLevelMeter, type LevelMeter } from './levelMeter'
 
 let stream: MediaStream | null = null
-let ctx: AudioContext | null = null
-let analyser: AnalyserNode | null = null
-let buf: Uint8Array | null = null
+let meter: LevelMeter | null = null
 
 export async function getMic(): Promise<MediaStream> {
   if (stream) return stream
@@ -23,15 +22,12 @@ export async function getMic(): Promise<MediaStream> {
 }
 
 export async function startAnalyser(): Promise<void> {
-  if (analyser) return
+  if (meter) return
   const s = await getMic()
-  ctx = new AudioContext()
-  const src = ctx.createMediaStreamSource(s)
-  analyser = ctx.createAnalyser()
-  analyser.fftSize = 512
-  analyser.smoothingTimeConstant = 0.75
-  src.connect(analyser)
-  buf = new Uint8Array(analyser.frequencyBinCount)
+  // Self-healing: a context born suspended (the phone app coming back to the
+  // screen) is resumed and rewired rather than left reading zeros. See
+  // levelMeter.ts.
+  meter = createLevelMeter(s, new AudioContext())
 }
 
 /**
@@ -43,22 +39,27 @@ export async function startAnalyser(): Promise<void> {
 export function releaseMic(): void {
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
-  void ctx?.close().catch(() => {})
-  ctx = null
-  analyser = null
-  buf = null
+  meter?.close()
+  meter = null
 }
 
 /** 0..1 loudness. Returns 0 before the analyser is up. */
 export function micLevel(): number {
-  if (!analyser || !buf) return 0
-  analyser.getByteFrequencyData(buf as Uint8Array<ArrayBuffer>)
-  let sum = 0
-  // Skip the lowest bins — they're mostly rumble and mains hum.
-  for (let i = 4; i < buf.length; i++) sum += buf[i]
-  const avg = sum / (buf.length - 4) / 255
-  // Voice sits low in this range; stretch it so the visuals actually move.
-  return Math.min(1, avg * 3.2)
+  return meter ? meter.level() : 0
+}
+
+// For the WebView / DevTools console: `__meter` — is the reactor's meter up,
+// is its context running, and how often has it had to heal itself.
+if (typeof window !== 'undefined') {
+  Object.defineProperty(window, '__meter', {
+    configurable: true,
+    get: () => ({
+      open: Boolean(meter),
+      state: meter ? meter.state() : 'none',
+      rewires: meter ? meter.rewires() : 0,
+      level: micLevel(),
+    }),
+  })
 }
 
 /** Analyser fed from an <audio> element, so the orb reacts while JARVIS talks. */
