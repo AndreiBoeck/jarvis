@@ -4,6 +4,9 @@
  * the earlier stream, so everything that needs audio goes through here.
  */
 
+import { IS_APP } from '../config'
+import { micConstraints } from './micProfile'
+
 let stream: MediaStream | null = null
 let ctx: AudioContext | null = null
 let analyser: AnalyserNode | null = null
@@ -11,12 +14,10 @@ let buf: Uint8Array | null = null
 
 export async function getMic(): Promise<MediaStream> {
   if (stream) return stream
+  // In the Android app the processing is off: asking for it puts the phone
+  // in call mode. See micProfile.ts.
   stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
+    audio: micConstraints(IS_APP),
   })
   return stream
 }

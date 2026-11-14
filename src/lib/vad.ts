@@ -1,4 +1,6 @@
 import { getMic } from './audio'
+import { IS_APP } from '../config'
+import { echoTuning } from './micProfile'
 
 /**
  * Voice-activity detection and segment capture.
@@ -55,8 +57,9 @@ export type Vad = {
 /** How far above the noise floor the signal must rise to count as speech.
  *  The floor tracks the room, so this is a ratio, not an absolute level. */
 const TRIGGER_OVER_FLOOR = 2.6
-/** While he is speaking, demand this much more, so residual echo is ignored. */
-const GUARD_BOOST = 2.4
+/** While he is speaking, demand this much more, so residual echo is ignored.
+ *  Higher in the Android app, which records without echo cancellation. */
+const GUARD_BOOST = echoTuning(IS_APP).guardBoost
 /** Falling back below trigger×this ends the segment. Hysteresis stops a single
  *  dip mid-word from cutting a sentence in half. */
 const RELEASE_RATIO = 0.6

@@ -110,6 +110,9 @@ export default function App() {
   /** Opens a fresh voice loop. Set once the boot sequence knows how. */
   const openVoiceFn = useRef<(() => Promise<Voice>) | null>(null)
   const reopening = useRef<Promise<void> | null>(null)
+  /** Moves every time the microphone is closed, so a reopen that was still in
+   *  flight when that happened knows the stream it started on is gone. */
+  const micGen = useRef(0)
 
   /**
    * Whether the microphone should be open right now. Two things close it: the
@@ -122,6 +125,7 @@ export default function App() {
   /** Let go completely: the loop, the stream, the analyser. The OS microphone
    *  light goes out, which is the only mute indicator anyone actually trusts. */
   const closeMic = () => {
+    micGen.current++
     voice.current?.stop()
     voice.current = null
     releaseMic()
@@ -131,10 +135,17 @@ export default function App() {
   const syncMic = () => {
     if (!micWanted()) {
       closeMic()
+      // The phone app leaving the screen closes a turn that was waiting for
+      // words, as muting does: nothing is listening for them any more.
+      const phase = store.getState().phase
+      if (!store.getState().muted && (phase === 'listening' || phase === 'waking')) {
+        goDormant()
+      }
       return
     }
     const open = openVoiceFn.current
     if (voice.current || reopening.current || !open) return
+    const gen = micGen.current
     reopening.current = (async () => {
       try {
         await startAnalyser()
@@ -142,13 +153,16 @@ export default function App() {
         /* the reactor just won't pulse */
       }
       const v = await open()
-      // Muted, or sent off screen, while it was opening.
-      if (!micWanted()) {
+      // Muted, or sent off screen, while it was opening — even if it has come
+      // back since, the stream this loop started on was let go in between.
+      if (gen !== micGen.current || !micWanted()) {
         v.stop()
         releaseMic()
       } else voice.current = v
     })().finally(() => {
       reopening.current = null
+      // Closed and wanted again while that one was opening: open a clean one.
+      if (!voice.current && micWanted()) syncMic()
     })
   }
 
@@ -197,8 +211,9 @@ export default function App() {
     clearIdle()
     const s = store.getState()
     s.setCaption('')
-    // Muted, the follow-up window would be a lie: nothing is listening.
-    if (s.muted) {
+    // Muted — or, in the phone app, off screen — the follow-up window would
+    // be a lie: nothing is listening.
+    if (!micWanted()) {
       s.setPhase('dormant')
       return
     }

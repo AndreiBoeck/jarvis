@@ -3,6 +3,7 @@ import { getMic } from './audio'
 import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
+import { echoTuning } from './micProfile'
 
 /**
  * The voice loop.
@@ -139,8 +140,13 @@ const TRAILS = /[,;:–—-]$/
  *
  * Kept short deliberately. This is the one window where a genuine interruption
  * is also least likely: the user has not yet heard enough to want to stop him.
+ * Longer in the Android app, which records with no echo canceller at all.
  */
-const SELF_GUARD_MS = 350
+const SELF_GUARD_MS = echoTuning(IS_APP).selfGuardMs
+
+/** Share of what was heard that must match his own line to be his echo. Lower
+ *  in the Android app, whose microphone has no echo canceller. */
+const ECHO_RATIO = echoTuning(IS_APP).echoRatio
 
 /**
  * A quiet gap this long with a finished-looking sentence ends the turn.
@@ -314,7 +320,7 @@ function isEcho(heard: string, spoken: string): boolean {
 
   let hits = 0
   for (const w of content) if (mine.has(w)) hits++
-  return hits / content.length >= 0.6
+  return hits / content.length >= ECHO_RATIO
 }
 
 // ---------------------------------------------------------------------------
