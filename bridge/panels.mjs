@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { probeUrl } from './page.mjs'
+import { ScreenLibrary, renderScreen } from './screens.mjs'
 
 /**
  * The `display` tool — JARVIS's screen.
@@ -355,6 +356,41 @@ const noCameraSchema = {
     .describe('What is being opened. See the tool description.'),
 }
 
+const SCREEN_DESCRIPTION = `Create and reuse a Blade screen when the existing
+blade kinds do not fit what the user needs.
+
+Screens are persistent presentation templates. Save one once, then open it in
+later turns with new values. Use {{field_name}} placeholders in the HTML for
+the changing text; opening the screen replaces those fields safely. The HTML
+uses the same .hud-* design system as display and is sanitised again every time
+it reaches the browser. It cannot run scripts or acquire new capabilities.
+
+Actions:
+  save   — create or update a reusable screen, and optionally open it now.
+  open   — open an existing screen with current values.
+  list   — inspect what has already been learned before inventing another one.
+  forget — remove a screen that is no longer useful.
+
+Create a screen when the user asks for a recurring view, or when no built-in
+blade kind expresses the information clearly. Reuse an existing screen when it
+already fits. Do not save one-off decoration or untrusted page content.`
+
+const screenSchema = {
+  action: z.enum(['save', 'open', 'list', 'forget']).describe('What to do with the screen library.'),
+  name: z.string().optional().catch(undefined).describe('Stable short name, e.g. "project-status".'),
+  title: z.string().optional().catch(undefined).describe('Blade title when saving a screen.'),
+  description: z.string().optional().catch(undefined).describe('When this screen should be reused.'),
+  html: z.string().optional().catch(undefined).describe(
+    'For save: HTML in the display .hud-* design system. Put {{field}} placeholders where values change.',
+  ),
+  values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+    .optional().catch(undefined).describe('For open/save: values for the template placeholders.'),
+  size: z.enum(['compact', 'tall', 'wide', 'full']).optional().catch(undefined),
+  hold: z.enum(['turn', 'sticky']).optional().catch(undefined),
+  open_now: z.boolean().optional().catch(undefined).describe('For save: open the new screen immediately. Default true.'),
+  screen: screenField(),
+}
+
 /**
  * @param emit       pushes a panel to this conversation's screen
  * @param emitBlade  (blade, screen) => { error?, label } — opens a blade on the
@@ -362,6 +398,7 @@ const noCameraSchema = {
  *                   it went (' on the PC'), `error` why it could not.
  */
 export function displayServer(emit, emitBlade, { camera = true } = {}) {
+  const screens = new ScreenLibrary()
   return createSdkMcpServer({
     name: 'jarvis',
     version: '1.0.0',
@@ -475,6 +512,50 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
           return { content: [{ type: 'text', text: JSON.stringify(report, null, 1) }] }
         },
       ),
+      tool('blade_screen', `${SCREEN_DESCRIPTION}\n\n${DESIGN_SYSTEM}`, screenSchema, async (args) => {
+        if (args.action === 'list') {
+          const saved = await screens.list()
+          return ok(saved.length ? JSON.stringify(saved, null, 2) : 'No reusable Blade screens saved yet.')
+        }
+
+        if (!String(args.name ?? '').trim()) return refuse(`Action "${args.action}" needs a screen name.`)
+
+        if (args.action === 'forget') {
+          const removed = await screens.remove(args.name)
+          return ok(removed ? `Forgot the "${args.name}" screen.` : `No screen named "${args.name}" was saved.`)
+        }
+
+        let saved
+        if (args.action === 'save') {
+          try {
+            saved = await screens.save(args)
+          } catch (err) {
+            return refuse(`Screen not saved: ${err?.message ?? err}`)
+          }
+          if (args.open_now === false) return ok(`Saved reusable screen "${saved.id}".`)
+        } else {
+          saved = await screens.get(args.name)
+          if (!saved) return refuse(`No screen named "${args.name}". Use action "list" or save it first.`)
+        }
+
+        let html
+        try {
+          html = renderScreen(saved, args.values)
+        } catch (err) {
+          return refuse(`Screen not opened: ${err?.message ?? err}`)
+        }
+        const blade = {
+          id: `s${Date.now().toString(36)}-${(seq++).toString(36)}`,
+          title: saved.title,
+          kind: 'markup',
+          html,
+          size: args.size ?? saved.size,
+          hold: args.hold ?? 'turn',
+        }
+        const where = emitBlade(blade, args.screen ?? 'here')
+        if (where.error) return refuse(where.error)
+        return ok(`Opened saved screen "${saved.id}"${where.label}.`)
+      }),
     ],
   })
 }

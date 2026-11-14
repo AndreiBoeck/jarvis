@@ -60,8 +60,10 @@ function viaBridge(raw: string, route: 'img' | 'media'): string {
 }
 
 /** A whole document, rendered by the bridge so it can be framed at all. */
-const pageUrl = (url: string, mode: 'reader' | 'live') =>
-  withMediaKey(`${BRIDGE_HTTP_URL}/page?mode=${mode}&url=${encodeURIComponent(url)}`)
+const pageUrl = (url: string, mode: 'reader' | 'live', attempt = 0) =>
+  withMediaKey(
+    `${BRIDGE_HTTP_URL}/page?mode=${mode}&url=${encodeURIComponent(url)}&attempt=${attempt}`,
+  )
 
 /**
  * The three embed hosts, and only these.
@@ -157,24 +159,137 @@ const CameraView = memo(function CameraView() {
   return <video ref={el} className="bl-camera" autoPlay playsInline muted />
 })
 
+type PagePhase = 'loading' | 'ready' | 'error'
+
+/**
+ * A page is the only blade body whose success is asynchronous and ambiguous.
+ * iframe `load` is not enough: browsers fire it for the bridge's friendly error
+ * document as well. Successful reader/live documents announce `jarvis: ready`
+ * from the tightly sandboxed scroll shim in page.mjs, so this component uses
+ * that signal and verifies the sending window before trusting it.
+ *
+ * A stalled first mode gets one automatic try in the other mode. This is
+ * intentionally client-side: both attempts still go through the same guarded
+ * bridge endpoint, so the SSRF gate and document CSP remain the only path to
+ * the network.
+ */
+const ArticleView = memo(function ArticleView({ blade }: { blade: Blade }) {
+  const preferred = blade.mode ?? 'reader'
+  const [mode, setMode] = useState<'reader' | 'live'>(preferred)
+  const [attempt, setAttempt] = useState(0)
+  const [phase, setPhase] = useState<PagePhase>('loading')
+  const [fallback, setFallback] = useState(false)
+  const frame = useRef<HTMLIFrameElement>(null)
+
+  const load = useCallback((nextMode: 'reader' | 'live', isFallback = false) => {
+    setMode(nextMode)
+    setFallback(isFallback)
+    setPhase('loading')
+    setAttempt((n) => n + 1)
+  }, [])
+
+  useEffect(() => {
+    setMode(preferred)
+    setAttempt(0)
+    setPhase('loading')
+    setFallback(false)
+  }, [blade.url, preferred])
+
+  useEffect(() => {
+    const ready = (event: MessageEvent) => {
+      if (event.source !== frame.current?.contentWindow) return
+      if (event.data?.jarvis === 'ready') setPhase('ready')
+      if (event.data?.jarvis === 'error') setPhase('error')
+    }
+    window.addEventListener('message', ready)
+    return () => window.removeEventListener('message', ready)
+  }, [])
+
+  useEffect(() => {
+    if (phase !== 'loading') return
+    const timer = window.setTimeout(() => {
+      setPhase('error')
+    }, 18_000)
+    return () => window.clearTimeout(timer)
+  }, [phase])
+
+  // A bridge error is explicit, so do not make the user sit through the rest
+  // of the timeout before trying the alternate representation. Timeouts take
+  // this same path when the upstream simply stops answering.
+  useEffect(() => {
+    if (phase !== 'error' || fallback) return
+    load(mode === 'reader' ? 'live' : 'reader', true)
+  }, [fallback, load, mode, phase])
+
+  const otherMode = mode === 'reader' ? 'live' : 'reader'
+
+  return (
+    <div className="bl-page">
+      <iframe
+        key={`${mode}-${attempt}`}
+        ref={frame}
+        className="bl-frame"
+        src={pageUrl(blade.url!, mode, attempt)}
+        // See Body's security note above. In particular, do not add
+        // allow-same-origin here: proxied documents are served by the bridge.
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        title={blade.title}
+        onError={() => setPhase('error')}
+      />
+
+      {phase !== 'ready' && (
+        <div className={`bl-page-state bl-page-${phase}`} role="status" aria-live="polite">
+          {phase === 'loading' ? (
+            <>
+              <span className="bl-page-spinner" aria-hidden="true" />
+              <b>{fallback ? `Trying ${mode} view…` : 'Opening page…'}</b>
+              <span>
+                {fallback
+                  ? `The ${preferred} view did not answer, so JARVIS switched automatically.`
+                  : `${mode === 'reader' ? 'Extracting a clean reading view' : 'Rebuilding the live layout'} securely through the bridge.`}
+              </span>
+            </>
+          ) : (
+            <>
+              <b>This page did not answer.</b>
+              <span>The site may be unavailable or require scripts that the secure Blade does not run.</span>
+              <div className="bl-page-actions">
+                <button className="bl-btn" onClick={() => load(mode)}>Retry</button>
+                <button className="bl-btn" onClick={() => load(otherMode)}>
+                  Try {otherMode} view
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="bl-page-mode" aria-label="Page view">
+        <button
+          className={`bl-btn${mode === 'reader' ? ' is-active' : ''}`}
+          onClick={() => mode !== 'reader' && load('reader')}
+          aria-pressed={mode === 'reader'}
+        >
+          Reader
+        </button>
+        <button
+          className={`bl-btn${mode === 'live' ? ' is-active' : ''}`}
+          onClick={() => mode !== 'live' && load('live')}
+          aria-pressed={mode === 'live'}
+        >
+          Live
+        </button>
+      </div>
+    </div>
+  )
+})
+
 const Body = memo(function Body({ blade }: { blade: Blade }) {
   if (blade.kind === 'camera') return <CameraView />
 
   if (blade.kind === 'article' && blade.url) {
-    return (
-      <iframe
-        className="bl-frame"
-        src={pageUrl(blade.url, blade.mode ?? 'reader')}
-        // allow-scripts WITHOUT allow-same-origin. That combination is the
-        // point: the page runs in an opaque origin, so the one script the
-        // bridge injects can move the document's own scroll position and can
-        // reach nothing of ours — not this origin, not the agent socket. Adding
-        // allow-same-origin would hand a page found on the web the keys.
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-        title={blade.title}
-      />
-    )
+    return <ArticleView blade={blade} />
   }
 
   if (blade.kind === 'embed' && blade.url) {
