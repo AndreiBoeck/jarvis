@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { probeUrl } from './page.mjs'
+import { TRAVEL, mapEmbed, mapFromUrl } from './maps.mjs'
 
 /**
  * The `display` tool — JARVIS's screen.
@@ -235,6 +236,11 @@ ${DESIGN_SYSTEM}`
  */
 let seq = 0
 
+/** The official Maps Embed API key, if there is one; keyless embeds otherwise. */
+const MAPS_KEY = process.env.JARVIS_MAPS_EMBED_KEY?.trim() || ''
+/** Where a route starts when the user did not say: the configured home. */
+const HOME = process.env.JARVIS_LOCATION?.trim() || ''
+
 // ---------------------------------------------------------------------------
 // Blades
 // ---------------------------------------------------------------------------
@@ -258,6 +264,16 @@ Choosing what to open:
   gallery — several pictures at once. This is the answer to an image search.
   video   — a direct .mp4/.webm file.
   embed   — a YouTube or Vimeo watch URL. It is turned into a player.
+  map     — a place, or a route to it, on a live Google map. Give
+            \`destination\` (an address or a place name, e.g. "PUCRS, Porto
+            Alegre"), and \`origin\` when the user named a starting point;
+            without one the route starts from their home location if it is
+            configured, and otherwise the map shows the destination alone.
+            \`travel\`: driving (default), walking, transit or bicycling. Use
+            this for every map, route, directions or "how do I get to" — never
+            an article: Maps draws itself with scripts, and an article blade of
+            it is blank. A Google Maps link passed as an article is turned into
+            a map for you.
   markup  — your own composed HTML, in the same .hud-* system the display tool
             uses, when none of the above is the shape of the answer.
   camera  — the live view from the user's camera, on screen. Open it when they
@@ -282,7 +298,7 @@ const bladeSchema = {
     .string()
     .describe('Two to four words naming what this is, e.g. "REUTERS" or "MARK VII".'),
   kind: z
-    .enum(['article', 'image', 'gallery', 'video', 'embed', 'markup', 'camera'])
+    .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'markup', 'camera'])
     .describe('What is being opened. See the tool description.'),
   url: z
     .string()
@@ -302,6 +318,21 @@ const bladeSchema = {
     .optional()
     .catch(undefined)
     .describe('Your own markup, for kind "markup", in the .hud-* design system.'),
+  destination: z
+    .string()
+    .optional()
+    .catch(undefined)
+    .describe('For kind "map": the place, or the end of the route.'),
+  origin: z
+    .string()
+    .optional()
+    .catch(undefined)
+    .describe('For kind "map": where the route starts, only if the user said.'),
+  travel: z
+    .enum(TRAVEL)
+    .optional()
+    .catch(undefined)
+    .describe('For kind "map": driving (default), walking, transit or bicycling.'),
   mode: z
     .enum(['reader', 'live'])
     .optional()
@@ -351,7 +382,7 @@ const NO_CAMERA_DESCRIPTION = BLADE_DESCRIPTION.replace(CAMERA_BLADE, '')
 const noCameraSchema = {
   ...bladeSchema,
   kind: z
-    .enum(['article', 'image', 'gallery', 'video', 'embed', 'markup'])
+    .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'markup'])
     .describe('What is being opened. See the tool description.'),
 }
 
@@ -430,8 +461,9 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
         camera ? BLADE_DESCRIPTION : NO_CAMERA_DESCRIPTION,
         camera ? bladeSchema : noCameraSchema,
         async (args) => {
-        const kind = args.kind
-        const url = String(args.url ?? '').trim()
+        let kind = args.kind
+        let url = String(args.url ?? '').trim()
+        let mapNote = ''
         const images = Array.isArray(args.images) ? args.images.filter(Boolean) : []
 
         // Refused rather than emitted, for the same reason the display tool
@@ -445,6 +477,34 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
         }
         if (['article', 'image', 'video', 'embed'].includes(kind) && !url) {
           return refuse(`Not opened: kind "${kind}" needs a \`url\`.`)
+        }
+
+        // A Google Maps link as an article would open blank: Maps draws itself
+        // with the scripts an article blade removes. Make it a map instead.
+        let where = null
+        if (kind === 'map') {
+          where = { destination: args.destination, origin: args.origin, travel: args.travel }
+          if (!String(args.destination ?? '').trim() && url) where = mapFromUrl(url)
+        } else if (url && (kind === 'article' || kind === 'embed')) {
+          const fromUrl = mapFromUrl(url)
+          if (fromUrl) where = fromUrl
+        }
+        if (where?.short) {
+          return refuse(
+            'Not opened: that is a shortened Maps link, which cannot be read. Open ' +
+              'kind "map" with the place as `destination` instead.',
+          )
+        }
+        if (kind === 'map' && !String(where?.destination ?? '').trim()) {
+          return refuse('Not opened: kind "map" needs a `destination` — an address or a place name.')
+        }
+        if (where) {
+          const map = mapEmbed(where, { key: MAPS_KEY, home: HOME })
+          kind = 'map'
+          url = map.url
+          mapNote = map.route
+            ? ` Route from ${map.origin}${args.origin ? '' : ' (their home location)'}.`
+            : ' Showing the destination alone — no starting point was given and no home location is configured.'
         }
 
         const blade = {
@@ -461,9 +521,13 @@ export function displayServer(emit, emitBlade, { camera = true } = {}) {
           size: args.size ?? (kind === 'article' ? 'tall' : 'wide'),
           hold: args.hold ?? 'turn',
         }
-        const where = emitBlade(blade, args.screen ?? 'here')
-        if (where.error) return refuse(where.error)
-        return { content: [{ type: 'text', text: `Open on the blades${where.label} as "${blade.title}".` }] }
+        const placed = emitBlade(blade, args.screen ?? 'here')
+        if (placed.error) return refuse(placed.error)
+        return {
+          content: [
+            { type: 'text', text: `Open on the blades${placed.label} as "${blade.title}".${mapNote}` },
+          ],
+        }
       }),
 
       tool(

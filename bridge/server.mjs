@@ -457,6 +457,10 @@ const PROMPT_BLADES = `The blades — the ONLY surface:
 - An article opens in reading mode by default, which works even on sites that
   refuse to be embedded. Choose the live page when the layout carries the
   meaning — a dashboard, a chart, a profile, a table.
+- A map, a route or directions is always the \`map\` blade, never an article:
+  Google Maps and other web apps draw themselves with scripts, and an article
+  blade of them is blank. When probe_url says \`not_showable\`, do not open it
+  as an article; say what you found, or take a screenshot and show that.
 - Never read a blade aloud. Say what it means and let them look.
 
 `

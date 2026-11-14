@@ -245,6 +245,26 @@ function readableText(body) {
   return parts.join(' ')
 }
 
+/**
+ * A page that is nothing until its own scripts draw it — Google Maps, most web
+ * apps, many single-page sites. With the scripts removed, which is the price
+ * of framing a page at all, there is nothing left to show, and a blade showing
+ * nothing reads as the interface being broken. Measured on what would be left:
+ * the visible text in <body> and whether there is any picture.
+ */
+export function scriptOnly(html) {
+  const raw = String(html ?? '')
+  const scripts = (raw.match(/<script\b/gi) ?? []).length
+  if (!scripts) return false
+  const clean = stripDangerous(raw)
+  const bodyMatch = /<body\b[^>]*>([\s\S]*)<\/body>/i.exec(clean)
+  const body = (bodyMatch ? bodyMatch[1] : clean)
+    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, '')
+    .replace(/<noscript\b[\s\S]*?<\/noscript\s*>/gi, '')
+  if (/<(img|picture|video|svg|canvas)\b/i.test(body)) return false
+  return textOf(body).length < 200
+}
+
 /** Absolute-ise a URL found in the document against the page it came from. */
 function absolute(href, base) {
   try {
@@ -404,6 +424,16 @@ export async function renderPage(url, mode, bridgeOrigin, mediaKey) {
     throw proxyError(415, `not a web page (got ${page.type || 'nothing'})`)
   }
 
+  // Nothing would be left once its scripts are gone: say so, rather than
+  // framing an empty page. The error page is what the blade then shows.
+  if (scriptOnly(page.text)) {
+    throw proxyError(
+      422,
+      'It draws itself with its own scripts, which a blade does not run — so it ' +
+        'would be blank here. A map or a route has its own blade.',
+    )
+  }
+
   const live = mode === 'live'
   const nonce = randomBytes(16).toString('base64')
   const shim = `<script nonce="${nonce}">${SCROLL_SHIM}</script>`
@@ -524,6 +554,17 @@ export async function probeUrl(url) {
     const readable = readableText(articleBody(clean))
     const title = titleOf(full.text)
     const lead = metaContent(full.text, ['og:image', 'twitter:image'])
+    if (scriptOnly(full.text)) {
+      return {
+        ...base,
+        title,
+        scriptOnly: true,
+        leadImage: lead || null,
+        reason:
+          'the page is drawn by its own scripts; as an article blade it would be blank',
+        suggestion: 'not_showable',
+      }
+    }
     return {
       ...base,
       title,

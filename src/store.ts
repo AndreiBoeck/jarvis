@@ -39,8 +39,8 @@ export type Panel = {
 export type Blade = {
   id: string
   title: string
-  kind: 'article' | 'image' | 'gallery' | 'video' | 'embed' | 'markup' | 'camera'
-  /** article / image / video / embed. */
+  kind: 'article' | 'image' | 'gallery' | 'video' | 'embed' | 'map' | 'markup' | 'camera'
+  /** article / image / video / embed / map (a Google Maps embed URL). */
   url?: string
   /** gallery. */
   images?: string[]

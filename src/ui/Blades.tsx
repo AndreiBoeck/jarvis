@@ -97,6 +97,27 @@ function embedUrl(raw: string): string | null {
   return null
 }
 
+/**
+ * A Google Maps embed, and only that — the same check as bridge/maps.mjs. The
+ * bridge builds these; anything else is refused rather than framed.
+ */
+function mapUrl(raw: string): string | null {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:') return null
+  if (url.hostname === 'maps.google.com' && url.pathname === '/maps') {
+    return url.searchParams.get('output') === 'embed' ? url.href : null
+  }
+  if (url.hostname === 'www.google.com' && /^\/maps\/embed\/v1\/(directions|place)$/.test(url.pathname)) {
+    return url.href
+  }
+  return null
+}
+
 /* --------------------------------------------------------------------- body */
 
 /**
@@ -193,6 +214,24 @@ const Body = memo(function Body({ blade }: { blade: Blade }) {
         // sends the origin alone (http://localhost:5173), never the path.
         referrerPolicy="strict-origin-when-cross-origin"
         allowFullScreen
+        title={blade.title}
+      />
+    )
+  }
+
+  if (blade.kind === 'map' && blade.url) {
+    const map = mapUrl(blade.url)
+    if (!map) return <p className="bl-note">That map could not be shown.</p>
+    return (
+      <iframe
+        className="bl-frame"
+        src={map}
+        // Google's own origin, like a video player: it needs its scripts and
+        // its origin to draw. Nothing of ours is granted — no popups, no top
+        // navigation, no forms.
+        sandbox="allow-scripts allow-same-origin"
+        referrerPolicy="strict-origin-when-cross-origin"
+        loading="lazy"
         title={blade.title}
       />
     )
