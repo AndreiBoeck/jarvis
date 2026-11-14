@@ -33,6 +33,7 @@ import {
 } from './monitor.mjs'
 import { Caller, callServer, maskNumber } from './calls.mjs'
 import { askCodex, looksLikeLimit, CODEX_ENABLED } from './codex.mjs'
+import { PROMPT_CLOCK, stampNow } from './clock.mjs'
 import {
   Mailroom,
   GATHER_SYSTEM_PROMPT,
@@ -622,6 +623,7 @@ const PROMPT_TOOLS = `Using tools:
 
 const SYSTEM_PROMPT = [
   PROMPT_CORE,
+  PROMPT_CLOCK,
   PROMPT_BLADES,
   DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
   DISABLED.has('browser') ? '' : PROMPT_BROWSER,
@@ -666,6 +668,7 @@ const claudeAvailable = () => !FORCE_CODEX && Date.now() >= claudeOutUntil
 /** The persona for the reserve brain, without the tools it does not have. */
 const CODEX_SYSTEM =
   PROMPT_CORE +
+  PROMPT_CLOCK +
   `You are answering through your reserve systems: the main ones are out of
 capacity for now. You have no blades, no interface controls, no camera, phone or
 Mac here — only what this environment gives you, including web search. Answer
@@ -1864,7 +1867,8 @@ wss.on('connection', (socket, req) => {
       const text = await askCodex({
         system: CODEX_SYSTEM,
         history: transcript.slice(-12),
-        question: asked,
+        // Stamped here, not in what is remembered: see clock.mjs.
+        question: stampNow(asked),
         cwd: WORKSPACE,
         signal: ac.signal,
         onText: (delta) => tag({ type: 'text', delta }),
@@ -2397,12 +2401,17 @@ wss.on('connection', (socket, req) => {
           void answerWithCodex(text, id, questionLabel)
           return
         }
+        // The model has no clock of its own: every question carries the
+        // moment it was asked, for every screen. On the turn, not in the
+        // system prompt, which is cached. `question` stays unstamped, so the
+        // reserve brain's transcript is not littered with old clocks.
+        const stamped = stampNow(text)
         if (deliver) {
           const resolve = deliver
           deliver = null
-          resolve(text)
+          resolve(stamped)
         } else {
-          inbox.push(text)
+          inbox.push(stamped)
         }
       })
     }
