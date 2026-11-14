@@ -1,6 +1,6 @@
 import { BRIDGE_HTTP_URL, IS_APP, bridgeHeaders } from '../config'
 import { getMic } from './audio'
-import { speakingNow } from './tts'
+import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { echoTuning } from './micProfile'
@@ -30,7 +30,7 @@ export type VoiceMode =
   | 'wake'
   /** He is expecting you to speak. Everything is a command. */
   | 'command'
-  /** He is thinking or talking. Only "Hey JARVIS" may interrupt him. */
+  /** He is thinking or talking. Anything you say is an interruption. */
   | 'guard'
   /** Something is playing that must not be transcribed at all. */
   | 'deaf'
@@ -80,18 +80,6 @@ const WAKE_DEBOUNCE = 1500
  */
 const WAKE =
   /\b(?:hey|hi|ok|okay|yo)?\s*(?:jarvis|jarvys|jervis|jarvis's|travis|jarviss|java's|jarv)\b(?!'s)/i
-
-/**
- * The deliberately stricter wake phrase used while work is in flight.
- *
- * In standby, saying his name is enough. While thinking, using tools or
- * speaking, room conversation must not cancel the turn by accident: the user
- * has to address him explicitly with "Hey JARVIS". Recognition variants stay
- * here because the acoustic model often hears the name as Travis/Jervis, but
- * the leading "hey" is mandatory.
- */
-const GUARD_WAKE =
-  /\bhey\s+(?:jarvis|jarvys|jervis|jarvis's|travis|jarviss|java's|jarv)\b(?!'s)/i
 
 /** Everything after the wake phrase, which is usually the actual command. */
 function afterWake(text: string): string {
@@ -154,6 +142,8 @@ const TRAILS = /[,;:–—-]$/
  * is also least likely: the user has not yet heard enough to want to stop him.
  * Longer in the Android app, which records with no echo canceller at all.
  */
+const SELF_GUARD_MS = echoTuning(IS_APP).selfGuardMs
+
 /** Share of what was heard that must match his own line to be his echo. Lower
  *  in the Android app, whose microphone has no echo canceller. */
 const ECHO_RATIO = echoTuning(IS_APP).echoRatio
@@ -422,7 +412,6 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
 async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
   let lastWake = 0
   let vad: Vad | null = null
-  let segmentMode: VoiceMode | null = null
 
   /**
    * Segments waiting for the transcriber, oldest first.
@@ -437,7 +426,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
    * Order is preserved because the drain is single-flight, which matters —
    * "London" arriving before "what's the weather in" is worse than either.
    */
-  const pendingAudio: Array<{ blob: Blob; mode: VoiceMode }> = []
+  const pendingAudio: Blob[] = []
   let draining = false
 
   /**
@@ -457,11 +446,13 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
   /**
    * Send one captured segment to the bridge and act on the words.
    *
-   * The mode is captured when the segment starts. A slow transcription may
-   * arrive after an answer naturally ends; retaining the capture-time policy
-   * prevents speech heard while busy from being promoted into a command.
+   * The mode is re-read here, not at capture time, because a barge-in flips the
+   * machine from 'guard' to 'listening' between the segment starting and its
+   * transcript arriving — and the transcript belongs to the mode the user is in
+   * now, not the one they interrupted.
    */
-  const transcribe = async (blob: Blob, mode: VoiceMode) => {
+  const transcribe = async (blob: Blob) => {
+    const mode = h.mode()
     if (mode === 'deaf') return
     const t0 = performance.now()
     try {
@@ -509,20 +500,6 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
         return
       }
 
-      if (mode === 'guard') {
-        if (GUARD_WAKE.test(said) && Date.now() - lastWake > WAKE_DEBOUNCE) {
-          lastWake = Date.now()
-          diag.wakes++
-          diag.dropped = ''
-          diag.accepted++
-          h.onSpeechStart()
-          h.onWake(afterWake(said))
-        } else {
-          drop('busy — say "Hey JARVIS" to interrupt')
-        }
-        return
-      }
-
       // Not a turn yet — a piece of one. The assembler decides when the thought
       // is finished, reading the words and whether the room is still noisy.
       assemble.feed(said, vad?.meter().speaking ?? false)
@@ -539,8 +516,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     draining = true
     try {
       while (pendingAudio.length) {
-        const next = pendingAudio.shift()!
-        await transcribe(next.blob, next.mode)
+        await transcribe(pendingAudio.shift()!)
       }
     } finally {
       draining = false
@@ -550,27 +526,30 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
   vad = await startVad({
     onStart: () => {
       const mode = h.mode()
-      // Keep the policy that applied when the utterance began. An STT request
-      // can finish after a tool call or answer has ended; re-reading the phase
-      // then would turn room speech captured while busy into a command.
-      segmentMode = mode
       diag.mode = mode
       diag.sessions++
       if (mode === 'deaf') return
       // Standing down mid-thought throws the thought away with it. Otherwise
       // held text would surface as the opening of the *next* conversation.
       if (mode === 'wake') assemble.cancel()
-      // In guard mode we wait for the transcript. Loudness alone is not
-      // permission to cancel work; only the explicit "Hey JARVIS" phrase is.
+      // The barge-in. In guard mode the user has started talking over him, and
+      // because the guard threshold is high this is a real interruption rather
+      // than leaked playback — so cut him off now, do not wait for the words.
+      if (mode === 'guard') {
+        const since = speakingSince()
+        if (since && Date.now() - since < SELF_GUARD_MS) {
+          diag.selfGuarded++
+          return
+        }
+        h.onSpeechStart()
+      }
     },
     onEnd: (blob) => {
-      const mode = segmentMode ?? h.mode()
-      segmentMode = null
       // In the app, "Hey Jarvis" works only while the app is on screen. Once
       // it is in the background, nothing said near the phone is sent anywhere
       // until a tap or a return to the app — no listening in a pocket.
       if (IS_APP && h.mode() === 'wake' && document.visibilityState !== 'visible') return
-      pendingAudio.push({ blob, mode })
+      pendingAudio.push(blob)
       void drain()
     },
     onLevel: (v) => {
@@ -644,7 +623,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   let settled = ''
   let interim = ''
   let started = false
-  let bufferedMode: VoiceMode | null = null
+  let barged = false
   let lastWake = 0
   let lastAlive = Date.now()
   let silenceTimer: ReturnType<typeof setTimeout> | null = null
@@ -674,16 +653,12 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     settled = ''
     interim = ''
     started = false
-    bufferedMode = null
+    barged = false
   }
 
   const emit = () => {
     const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
-    // Use the policy from when this utterance was heard, not the phase at the
-    // end of the silence timer. Otherwise ordinary room speech captured while
-    // busy can become a command merely because the answer finished during the
-    // 900ms endpointing window.
-    const mode = bufferedMode ?? h.mode()
+    const mode = h.mode()
     reset()
     if (!text || mode === 'deaf') return
     if (isEcho(text, speakingNow())) {
@@ -705,20 +680,6 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       }
       return
     }
-    if (mode === 'guard') {
-      assemble.cancel()
-      if (GUARD_WAKE.test(text) && Date.now() - lastWake > WAKE_DEBOUNCE) {
-        lastWake = Date.now()
-        diag.wakes++
-        diag.dropped = ''
-        diag.accepted++
-        h.onSpeechStart()
-        h.onWake(afterWake(text))
-      } else {
-        drop('busy — say "Hey JARVIS" to interrupt')
-      }
-      return
-    }
     // The recogniser has already endpointed on its own 900ms gap; the assembler
     // decides whether that gap actually ended the thought. `false` because a
     // result only reaches here once the recogniser has gone quiet.
@@ -737,13 +698,9 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     const mode = h.mode()
     diag.mode = mode
     if (mode === 'deaf') {
-      reset()
-      assemble.cancel()
+      interim = ''
       return
     }
-    // SpeechRecognition can retain final results across a phase transition.
-    // Never concatenate text governed by two different listening policies.
-    if (bufferedMode !== null && bufferedMode !== mode) reset()
     let fresh = ''
     interim = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -757,7 +714,6 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       interim = ''
       return
     }
-    bufferedMode = mode
 
     if (mode === 'wake') {
       settled += fresh
@@ -775,27 +731,30 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
 
     settled += fresh
     const full = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
-    if (mode === 'guard') {
-      // Do not barge in on speech/noise. Wait until the recogniser has actually
-      // heard the explicit phrase; once it has, interrupt immediately from the
-      // partial and hand any trailing command to the ordinary wake path.
-      if (GUARD_WAKE.test(full) && Date.now() - lastWake > WAKE_DEBOUNCE) {
-        lastWake = Date.now()
-        diag.wakes++
-        diag.dropped = ''
-        diag.accepted++
-        const trailing = afterWake(full)
-        reset()
-        h.onSpeechStart()
-        h.onWake(trailing)
-      } else {
-        drop('busy — say "Hey JARVIS" to interrupt')
-        bumpSilence()
+    if (!started || (mode === 'guard' && !barged)) {
+      const words = full.split(/\s+/).filter(Boolean).length
+      if (mode === 'guard') {
+        // An override word cuts through everything below it — "stop" has to
+        // work on the first syllable or it is not a stop button.
+        if (!OVERRIDE.test(full)) {
+          // His own first syllable, same as the premium path. This engine has
+          // no energy gate, so without the clock the only defence is the word
+          // count below, and a single clear word is exactly what leaks first.
+          const since = speakingSince()
+          if (since && Date.now() - since < SELF_GUARD_MS) {
+            diag.selfGuarded++
+            return
+          }
+          // Two words before this engine believes an interruption. The energy
+          // path can be instant because it triggers on loudness the canceller
+          // has already had a pass at; here the evidence is a transcript of
+          // audio that includes his own playback, and one word of that is not
+          // evidence of anything.
+          if (words < 2) return
+        }
       }
-      return
-    }
-    if (!started) {
       started = true
+      if (mode === 'guard') barged = true
       h.onSpeechStart()
     }
     diag.dropped = ''

@@ -17,7 +17,6 @@
 
 import { WebSocketServer } from 'ws'
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { randomBytes } from 'node:crypto'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
@@ -459,10 +458,6 @@ const PROMPT_BLADES = `The blades — the ONLY surface:
   refuse to be embedded. Choose the live page when the layout carries the
   meaning — a dashboard, a chart, a profile, a table.
 - Never read a blade aloud. Say what it means and let them look.
-- If none of the built-in blade kinds fits a useful recurring view, use
-  \`blade_screen\` to create that screen in real time. Give changing content
-  {{field}} placeholders. It is saved locally and should be reused on later
-  turns instead of rebuilt. List the library before creating a near-duplicate.
 
 `
 const PROMPT_INTERFACE = `The interface itself:
@@ -1117,12 +1112,10 @@ const handleRequest = async (req, res) => {
       // inside an iframe: a bare 502 body is a blank rectangle on the display,
       // which reads as the interface being broken rather than as the article
       // being unavailable.
-      const nonce = randomBytes(16).toString('base64')
       res.writeHead(err.status ?? 502, {
         ...cors,
         'content-type': 'text/html; charset=utf-8',
-        'content-security-policy':
-          `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'`,
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
       })
       return res.end(
         `<!doctype html><meta charset="utf-8"><style>
@@ -1131,7 +1124,7 @@ const handleRequest = async (req, res) => {
            b{color:#cfe9ee;font-weight:500;display:block;margin-bottom:6px}
          </style><b>This page could not be opened.</b>${
            String(err?.message ?? 'unknown error').replace(/[<&]/g, '')
-         }<script nonce="${nonce}">try{parent.postMessage({jarvis:'error'},'*')}catch(e){}</script>`,
+         }`,
       )
     }
   }
