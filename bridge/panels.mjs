@@ -290,6 +290,12 @@ Choosing what to open:
             ask to see the camera, or when they want you to watch them do
             something: while it is open you can also review the seconds that
             have just passed, which you cannot do otherwise. Needs no url.
+            \`source\` picks WHOSE camera: leave it out for the camera of the
+            screen the blade opens on; "pc" for the PC's webcam, "phone" or
+            "mac" (or a paired device's name) for that device's — "show me
+            the PC's camera" from the phone is source "pc". Another device's
+            camera only when the user asks for it by name: it shows a banner
+            over there, and they can cut it.
 
 Size is about reading, not decoration. \`tall\` is a reading column — use it for
 any article the user intends to actually read. \`wide\` suits images, video and
@@ -359,6 +365,14 @@ const bladeSchema = {
     .catch(undefined)
     .describe('turn = closes when the user next speaks. sticky = stays until replaced.'),
   screen: screenField(),
+  source: z
+    .string()
+    .optional()
+    .catch(undefined)
+    .describe(
+      'For kind "camera": whose camera. Omit (or "here") for this screen\'s own; ' +
+        '"pc", "phone", "mac", or a paired device\'s name for another device\'s.',
+    ),
 }
 
 const SCREEN_DESCRIPTION = `Screens you made, kept by name so you can open them again.
@@ -441,8 +455,9 @@ argument. You know those things. Overrule it whenever you have reason to.`
 const CAMERA_BLADE =
   /  camera  — the live view from the user's camera[\s\S]*?Needs no url\.\n/
 const NO_CAMERA_DESCRIPTION = BLADE_DESCRIPTION.replace(CAMERA_BLADE, '')
+const { source: _source, ...withoutSource } = bladeSchema
 const noCameraSchema = {
-  ...bladeSchema,
+  ...withoutSource,
   kind: z
     .enum(['article', 'image', 'gallery', 'video', 'embed', 'map', 'browser', 'markup'])
     .describe('What is being opened. See the tool description.'),
@@ -457,7 +472,7 @@ const noCameraSchema = {
 export function displayServer(
   emit,
   emitBlade,
-  { camera = true, live = true, screens = screenStore() } = {},
+  { camera = true, live = true, screens = screenStore(), cameraSource = null } = {},
 ) {
   const newId = (p) => `${p}${Date.now().toString(36)}-${(seq++).toString(36)}`
   return createSdkMcpServer({
@@ -595,11 +610,26 @@ export function displayServer(
           // JARVIS mid-form is not a reason to throw the form away.
           hold: args.hold ?? (kind === 'browser' ? 'sticky' : 'turn'),
         }
+        // Another device's camera: granted here, by this tool call, or not at all.
+        let camNote = ''
+        if (kind === 'camera' && args.source && cameraSource) {
+          const cam = cameraSource(blade.id, String(args.source), args.screen ?? 'here')
+          if (cam.error) return refuse(`Not opened: ${cam.error}`)
+          if (!cam.local) {
+            blade.source = cam.source
+            blade.sourceLabel = cam.label
+            blade.hold = args.hold ?? 'sticky'
+            if (blade.title === 'DISPLAY') blade.title = 'CAMERA'
+            camNote = ` Showing the camera of the ${cam.label}${
+              cam.host ? `; it turns itself off after ${cam.minutes} minutes unless asked again` : ''
+            }.`
+          }
+        }
         const placed = emitBlade(blade, args.screen ?? 'here')
         if (placed.error) return refuse(placed.error)
         return {
           content: [
-            { type: 'text', text: `Open on the blades${placed.label} as "${blade.title}".${mapNote}` },
+            { type: 'text', text: `Open on the blades${placed.label} as "${blade.title}".${mapNote}${camNote}` },
           ],
         }
       }),

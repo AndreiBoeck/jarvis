@@ -62,6 +62,8 @@ import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { APP_CSP, appDocument, screenStore } from './screens.mjs'
 import { LiveBrowser } from './livebrowser.mjs'
+import { CamHub, hostMinutes, screenLabel } from './camfeed.mjs'
+import { HostCamera } from './hostcam.mjs'
 import {
   builtinTools,
   checkToolUse,
@@ -533,6 +535,11 @@ const PROMPT_EYES = `Your eyes:
   will see it. Curiosity is not a reason.
 - Describe a watch as a sequence — what changed between the frames — not as a
   list of pictures. They know what their own hands look like.
+- Other devices' cameras: "show me the PC's camera" is a camera blade with
+  \`source\` "pc"; "look through the phone's camera" is \`look\` with \`device\`
+  "phone". Only when they name the device. The other device shows a banner and
+  can cut it. "Cut / turn off the camera" means \`camera_off\`, at once, then
+  close the camera blade. \`cameras\` lists what can be watched.
 
 `
 const PROMPT_PHONE = `Their phone — the \`jarvis_phone\` tools:
@@ -966,13 +973,21 @@ const savedScreens = screenStore()
  */
 const LIVE_ON = !DISABLED.has('live') && !DISABLED.has('browser')
 const live = LIVE_ON ? new LiveBrowser({ bridgePort: PORT }) : null
-if (live) {
-  for (const sig of ['exit', 'SIGINT', 'SIGTERM']) {
-    process.once(sig, () => {
-      live.shutdown()
-      if (sig !== 'exit') process.exit(0)
-    })
-  }
+
+/** Child browsers (the live browser, the host camera) go down with the bridge. */
+const onShutdown = []
+if (live) onShutdown.push(() => live.shutdown())
+for (const sig of ['exit', 'SIGINT', 'SIGTERM']) {
+  process.once(sig, () => {
+    for (const fn of onShutdown.splice(0)) {
+      try {
+        fn()
+      } catch {
+        // going down anyway
+      }
+    }
+    if (sig !== 'exit') process.exit(0)
+  })
 }
 
 const handleRequest = async (req, res) => {
@@ -1606,6 +1621,18 @@ const HOME = process.platform === 'darwin' ? 'Mac' : 'PC'
 
 const SCREEN_LABEL = { pc: ` on the ${HOME}`, phone: ' on the phone', mac: ' on the Mac' }
 
+/**
+ * Cameras across devices: one screen's camera on another's blade, and the
+ * bridge's own capture of this machine's webcam when no interface is open
+ * here. Off with the rest of the camera (JARVIS_DISABLE=camera). See camfeed.mjs.
+ */
+const CAMERA_ON = !DISABLED.has('camera')
+const hostCamera = CAMERA_ON ? new HostCamera() : null
+const cams = CAMERA_ON
+  ? new CamHub({ hostCamera, home: HOME, log: (m) => console.log(`[jarvis] ${m}`) })
+  : null
+if (cams) onShutdown.push(() => cams.shutdown(), () => hostCamera.shutdown())
+
 /** The most recent open screen of a kind, or null. */
 function screenOf(kind) {
   let best = null
@@ -1844,12 +1871,58 @@ wss.on('connection', (socket, req) => {
   const screenKind =
     req.jarvisDevice?.kind === 'phone' && surface === 'car' ? 'car' : (req.jarvisDevice?.kind ?? 'pc')
   if (screenKind !== 'car') screens.set(screenId, {
+    id: screenId,
     kind: screenKind,
     name: req.jarvisDevice?.name ?? '',
     since: Date.now(),
     send,
     sendBlade: (blade) => send({ type: 'blade', blade }),
   })
+
+  // Its camera, and its camera blades, in the exchange between devices. Not
+  // the car: nothing to show a picture on, and no camera worth the name.
+  if (cams && screenKind !== 'car') {
+    cams.addScreen({
+      id: screenId,
+      kind: screenKind,
+      name: req.jarvisDevice?.name ?? '',
+      since: Date.now(),
+      send,
+      buffered: () => socket.bufferedAmount,
+      ask: (kind, args, ms) => ask(kind, args, ms),
+    })
+  }
+
+  /** The screen a blade aimed at `screen` lands on, for granting a camera to it. */
+  const viewerFor = (screen) =>
+    !screen || screen === 'here' || screen === screenKind ? screenId : (screenOf(screen)?.id ?? screenId)
+
+  /**
+   * Another device's camera, for look and watch. Null when `device` is this
+   * screen, so the ordinary capture handles it.
+   */
+  const remoteCameras = cams && {
+    capture(device, payload, timeoutMs) {
+      const r = cams.resolve(device, screenId)
+      if (r.local) return null
+      if (r.error) return Promise.reject(new Error(r.error))
+      const from = screenLabel(screens.get(screenId), HOME)
+      if (r.screen) return r.screen.ask('capture', { ...payload, from }, timeoutMs)
+      // The bridge's own capture: no screen over there to explain the light.
+      if (payload.when === 'past') {
+        return Promise.resolve({
+          error: `The ${HOME} has no JARVIS screen open, so nothing has been watching the last few seconds there. Offer to watch from now on.`,
+        })
+      }
+      console.log(`[jarvis] camera: ${payload.mode ?? 'look'} through the ${HOME}'s webcam, asked from ${from}`)
+      return hostCamera.capture(payload).catch((err) => ({
+        error: `The ${HOME}'s camera could not be read: ${err?.message ?? err}`,
+      }))
+    },
+    list: () => cams.list(screenId),
+    active: () => cams.active(),
+    stopAll: () => cams.stopAll(),
+  }
 
   /** Open a blade here, or on the other screen when the model names it. */
   const routeBlade = (blade, screen) => {
@@ -2123,7 +2196,17 @@ wss.on('connection', (socket, req) => {
         jarvis: displayServer(
           (panel) => send({ type: 'panel', panel }),
           routeBlade,
-          { camera: !DISABLED.has('camera'), live: LIVE_ON, screens: savedScreens },
+          {
+            camera: CAMERA_ON,
+            live: LIVE_ON,
+            screens: savedScreens,
+            cameraSource: cams
+              ? (bladeId, spec, screen) => ({
+                  ...cams.grant(bladeId, spec, viewerFor(screen)),
+                  minutes: hostMinutes(),
+                })
+              : null,
+          },
         ),
         // The interface controls, on the same socket. A separate key because
         // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
@@ -2139,7 +2222,7 @@ wss.on('connection', (socket, req) => {
           ? {}
           : { jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }) }),
         // The camera, which unlike everything else here has to ask and wait.
-        ...(DISABLED.has('camera') ? {} : { jarvis_eyes: visionServer(ask) }),
+        ...(DISABLED.has('camera') ? {} : { jarvis_eyes: visionServer(ask, remoteCameras) }),
         // The user's phone, through whichever JARVIS app is linked right now.
         // Offered whether or not one is connected, so "open Maps on my phone"
         // gets a clear "it isn't connected" rather than a shrug.
@@ -2481,6 +2564,14 @@ wss.on('connection', (socket, req) => {
       return
     }
 
+    // Cameras across devices: this screen as a viewer (watch, ack, close) and
+    // as a source (frames, cut). Over this socket because it is authenticated.
+    if (msg.type === 'cam' && typeof msg.op === 'string') {
+      if (cams) cams.handle(screenId, msg)
+      else send({ type: 'cam', id: msg.id, op: 'ended', reason: 'The camera is switched off on this bridge.' })
+      return
+    }
+
     if (msg.type === 'reply' && typeof msg.id === 'string') {
       const slot = waiting.get(msg.id)
       if (slot) {
@@ -2514,6 +2605,7 @@ wss.on('connection', (socket, req) => {
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
     live?.dropOwner(liveOwner)
+    cams?.dropScreen(screenId)
     interfaces.delete(send)
     if (mediaKey) dropMediaKey(mediaKey)
     screens.delete(screenId)

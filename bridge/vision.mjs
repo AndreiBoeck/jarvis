@@ -70,7 +70,30 @@ than listing them. The user knows what their own hands look like.`
  * @param {(kind: string, args: object) => Promise<object>} ask
  *   Sends a request to the browser and resolves with its reply.
  */
-export function visionServer(ask) {
+/**
+ * @param remote  optional cross-device camera access (camfeed.mjs):
+ *   { capture(device, args, timeoutMs) — a look/watch through another device's
+ *     camera, or null when `device` is this screen; list(); active(); stopAll() }
+ */
+export function visionServer(ask, remote = null) {
+  const deviceField = z
+    .string()
+    .optional()
+    .catch(undefined)
+    .describe(
+      'Whose camera. Omit for the camera of the screen this conversation is on. ' +
+        '"pc", "phone", "mac" or a paired device\'s name to look through that ' +
+        'device instead — only when the user names it ("look through the PC camera").',
+    )
+  /** Route a capture to this screen or to the device named. */
+  const capture = (args, payload, timeoutMs) => {
+    const device = String(args.device ?? '').trim()
+    if (remote && device && device.toLowerCase() !== 'here') {
+      const viaRemote = remote.capture(device, payload, timeoutMs)
+      if (viaRemote) return viaRemote
+    }
+    return ask('capture', payload, timeoutMs)
+  }
   return createSdkMcpServer({
     name: 'jarvis_eyes',
     version: '1.0.0',
@@ -92,11 +115,12 @@ export function visionServer(ask) {
               'A few words on what you are looking for, shown to the user while ' +
                 'the camera is live. They can see the light; tell them why.',
             ),
+          ...(remote ? { device: deviceField } : {}),
         },
         async (args) => {
           let reply
           try {
-            reply = await ask('capture', { reason: String(args.reason ?? '').slice(0, 80) })
+            reply = await capture(args, { reason: String(args.reason ?? '').slice(0, 80) })
           } catch (err) {
             return {
               isError: true,
@@ -161,12 +185,13 @@ export function visionServer(ask) {
             .optional()
             .catch(undefined)
             .describe('A few words on what you are watching for, shown on screen.'),
+          ...(remote ? { device: deviceField } : {}),
         },
         async (args) => {
           let reply
           try {
-            reply = await ask(
-              'capture',
+            reply = await capture(
+              args,
               {
                 mode: 'watch',
                 seconds: Number(args.seconds) || 6,
@@ -208,6 +233,40 @@ export function visionServer(ask) {
           }
         },
       ),
+      ...(remote
+        ? [
+            tool(
+              'cameras',
+              'Which cameras can be shown or looked through right now, by device, ' +
+                'and which are being watched at this moment. Use it when the user ' +
+                'asks what cameras there are, or names a device you are unsure of.',
+              {},
+              async () => ({
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({ cameras: remote.list(), watching: remote.active() }),
+                  },
+                ],
+              }),
+            ),
+            tool(
+              'camera_off',
+              'Turn off every camera being watched from another device — the PC\'s, ' +
+                'the phone\'s, the Mac\'s — at once. Use it the moment the user says ' +
+                'to cut, stop or turn off the camera(s). Then close any camera blade.',
+              {},
+              async () => {
+                const n = remote.stopAll()
+                return {
+                  content: [
+                    { type: 'text', text: n ? `Turned off ${n} camera feed(s).` : 'No camera was being watched from another device.' },
+                  ],
+                }
+              },
+            ),
+          ]
+        : []),
     ],
   })
 }
