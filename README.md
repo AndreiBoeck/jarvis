@@ -212,6 +212,53 @@ He drives the UI through MCP tools the bridge exposes:
 So *"make it red, hide the systems list, put that render in orbit"* is a spoken
 command.
 
+### JARVIS works the PC — and screens that control it
+
+On the machine the bridge runs on, JARVIS has buttons:
+
+- `jarvis_media` — what is playing (title, artist, cover) and play / pause /
+  next / previous, for **any** app: Spotify, a browser tab, a player. On
+  Windows through the System Media Transport Controls (one Windows PowerShell
+  helper, nothing to install; the bridge must run in your logged-in session,
+  not as a service). On a Mac, Spotify and Music by AppleScript.
+- `jarvis_pc` — the volume, locking the screen, turning the display off; and,
+  with write access, opening an app or a link, or sleep.
+- `jarvis_spotify` — your Spotify account: search, play a song / album /
+  playlist, pick the device, queue (see [Spotify](#spotify)).
+
+*"Pause the music"*, *"what's this song?"*, *"volume to thirty"*, *"play Daft
+Punk on my phone"* — just say it. *"Open the player"* puts a built-in player on
+the blades; *"open the Spotify screen"* one that searches and plays.
+
+**Saved screens can press those buttons too.** An app screen declares, when it
+is saved, which actions it may use (`media.next`, `system.volume`,
+`spotify.play`…) and calls `JARVIS.action(name, args)`. The first time it opens,
+the HUD shows **"Esta tela quer poder: …"** and nothing runs until you click
+*Permitir*; any later change to the screen asks again. Opening an app or a link
+and sleep ask *Permitir* on every press. Only actions in the bridge's fixed list
+exist at all — no shell, files, messages or calls — so a page that talks JARVIS
+into saving a screen still cannot get it to do anything you did not approve.
+
+### Spotify
+
+Pause/next/what's playing work with nothing set up. To search and play
+specific music, and choose the device, connect your account once (playback
+control needs **Premium**):
+
+1. Open <https://developer.spotify.com/dashboard>, sign in, **Create app**:
+   any name ("JARVIS"), any description, **Redirect URI**
+   `http://127.0.0.1:8787/spotify/callback` (exactly — Spotify no longer
+   accepts `localhost`), API: **Web API**. Save.
+2. In the app's **Settings**, copy the **Client ID** (no secret is needed) into
+   `.env.local` next to the bridge: `SPOTIFY_CLIENT_ID=…`
+3. In **User Management**, add your own Spotify e-mail (new apps start in
+   development mode).
+4. On the PC: `npm run spotify:login`. A browser opens on Spotify; allow it.
+   Done — the token is kept in `~/.jarvis/spotify.json` and renewed by itself.
+   Restart the bridge if it was running when you added the Client ID.
+
+Keep Spotify open on some device so there is one to play on.
+
 ### The heads-up display
 
 JARVIS authors panels with a `display` tool against a fixed `.hud-*` design
@@ -299,9 +346,12 @@ Read from the shell, and from `.env.local` for anything the shell does not set.
 | `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
-| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `mac`, `watch` |
+| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `mac`, `watch`, `media`, `system`, `spotify` |
 | `JARVIS_CAMERA_DEVICE` | the default webcam | Which webcam the bridge captures when no interface is open on its machine: any part of the camera's name (e.g. `C920`, `Integrated`) or its deviceId |
 | `JARVIS_CAMERA_HOST_MINUTES` | `10` | How long that capture runs before turning itself off unless asked again |
+| `SPOTIFY_CLIENT_ID` | none | Your Spotify app's Client ID; turns on `jarvis_spotify` (see [Spotify](#spotify)) |
+| `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8787/spotify/callback` | Only if your app uses another redirect |
+| `SPOTIFY_TOKEN_FILE` | `~/.jarvis/spotify.json` | Where the Spotify sign-in is kept |
 | `JARVIS_CALL_TO` | none | Your own number, e.g. `+5511…`, for "call me" and calling watches |
 | `JARVIS_USER_NAME` | none | Who JARVIS says he is calling on behalf of |
 | `JARVIS_CALL_INTRO` | `Hello, I'm Friday, {name}'s AI assistant, calling on his behalf.` | How a call to someone else opens |

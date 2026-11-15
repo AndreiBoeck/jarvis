@@ -167,6 +167,19 @@ export const DEVICE_ACTIONS = Object.freeze({
   'system.open_app': 'confirm',
   'system.open_url': 'confirm',
   'system.sleep': 'confirm',
+  // Spotify's own account and devices: playing music, nothing else.
+  'spotify.status': 'safe',
+  'spotify.search': 'safe',
+  'spotify.play': 'safe',
+  'spotify.pause': 'safe',
+  'spotify.next': 'safe',
+  'spotify.previous': 'safe',
+  'spotify.now_playing': 'safe',
+  'spotify.devices': 'safe',
+  'spotify.transfer': 'safe',
+  'spotify.queue': 'safe',
+  'spotify.playlists': 'safe',
+  'spotify.volume': 'safe',
 })
 
 /** The MCP servers built from DEVICE_ACTIONS, and which prefix each carries. */

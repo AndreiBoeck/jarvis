@@ -226,3 +226,22 @@ test('built-in screens: shipped, pre-approved, read-only, offered only when thei
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('every built-in screen calls only the actions it declares', async () => {
+  const { BUILTIN_SCREENS } = await import('../bridge/screens.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'jarvis-screens-'))
+  try {
+    const store = screenStore(dir, { validAction: () => true })
+    for (const b of BUILTIN_SCREENS) {
+      const s = store.get(b.id)
+      assert.ok(s, b.id)
+      const used = new Set([
+        ...[...s.html.matchAll(/(?:JARVIS\.action|press|ctl)\('([a-z]+\.[a-z_]+)'/g)].map((m) => m[1]),
+      ])
+      assert.ok(used.size > 0, `${b.id} calls something`)
+      for (const a of used) assert.ok(b.actions.includes(a), `${b.id}: ${a} not declared`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

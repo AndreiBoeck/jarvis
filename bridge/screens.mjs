@@ -85,6 +85,22 @@ export const BUILTIN_SCREENS = [
     description: 'What is playing on the PC, with its cover and play/pause, next and previous buttons.',
     actions: ['media.now_playing', 'media.play_pause', 'media.next', 'media.previous', 'system.volume'],
   },
+  {
+    id: 'spotify',
+    name: 'Spotify',
+    description: 'Search Spotify and play a song, artist, album or playlist; pick the device. Open with data {query} to start with a search.',
+    actions: [
+      'spotify.search',
+      'spotify.play',
+      'spotify.pause',
+      'spotify.next',
+      'spotify.previous',
+      'spotify.now_playing',
+      'spotify.devices',
+      'spotify.transfer',
+      'spotify.playlists',
+    ],
+  },
 ]
 
 /** A name as an id: lowercase, a-z0-9 and dashes. Nothing that walks a path. */

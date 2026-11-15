@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Spotify</title>
+<style>
+  :root { --c: #7fe8ff; --dim: rgba(127, 232, 255, 0.5); --line: rgba(127, 232, 255, 0.18) }
+  * { box-sizing: border-box }
+  html, body {
+    margin: 0; height: 100%; background: transparent; color: var(--c);
+    font: 400 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  body { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; overflow: hidden }
+  form { display: flex; gap: 6px }
+  input, select {
+    font: inherit; color: #dff9ff; background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--line); padding: 7px 9px; outline: none; min-width: 0;
+  }
+  input { flex: 1 }
+  input:focus, select:focus { border-color: rgba(127, 232, 255, 0.55) }
+  button {
+    appearance: none; font: inherit; color: var(--c); background: transparent;
+    border: 1px solid var(--line); padding: 6px 10px; cursor: pointer;
+  }
+  button:hover { background: rgba(127, 232, 255, 0.12); border-color: rgba(127, 232, 255, 0.5) }
+  .tabs { display: flex; gap: 4px }
+  .tabs button.on { border-color: rgba(127, 232, 255, 0.6); background: rgba(127, 232, 255, 0.1) }
+  .list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px }
+  .row {
+    display: grid; grid-template-columns: 40px 1fr auto; gap: 10px; align-items: center;
+    padding: 5px 6px; border: 1px solid transparent; cursor: pointer; text-align: left;
+  }
+  .row:hover { border-color: var(--line); background: rgba(127, 232, 255, 0.06) }
+  .row img, .row .ph { width: 40px; height: 40px; object-fit: cover; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--line) }
+  .name { color: #dff9ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .sub { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .tag { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.12em }
+  .now { display: grid; grid-template-columns: 44px 1fr auto; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding-top: 10px }
+  .now img, .now .ph { width: 44px; height: 44px; object-fit: cover; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.4) }
+  .ctl { display: flex; gap: 6px; align-items: center }
+  .note { min-height: 1.3em; font-size: 11px; color: var(--dim) }
+  .note.err { color: #ffb4a8 }
+</style>
+</head>
+<body>
+  <form id="form">
+    <input id="q" placeholder="Buscar música, artista, álbum ou playlist" autocomplete="off">
+    <button type="submit">Buscar</button>
+  </form>
+  <div class="tabs" id="tabs">
+    <button data-t="track" class="on">Músicas</button>
+    <button data-t="artist">Artistas</button>
+    <button data-t="album">Álbuns</button>
+    <button data-t="playlist">Playlists</button>
+    <button data-t="mine">Minhas playlists</button>
+  </div>
+  <div class="list" id="list"></div>
+  <div class="note" id="note"></div>
+  <div class="now">
+    <div class="ph" id="nowArt"></div>
+    <div style="min-width:0">
+      <div class="name" id="nowTitle">—</div>
+      <div class="sub" id="nowSub">&nbsp;</div>
+    </div>
+    <div class="ctl">
+      <button id="prev" title="Anterior">⏮</button>
+      <button id="toggle" title="Tocar/pausar">⏯</button>
+      <button id="next" title="Próxima">⏭</button>
+      <select id="device" title="Aparelho"><option value="">aparelho…</option></select>
+    </div>
+  </div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id) }
+  var kind = 'track'
+  var playing = false
+
+  function note(t, err) { $('note').textContent = t || ''; $('note').className = 'note' + (err ? ' err' : '') }
+  function fail(err) {
+    var code = err && err.code
+    note(code === 'not-approved' ? 'Permita as ações desta tela no cartão acima.' : (err && err.message) || 'Não deu.', true)
+  }
+  function img(src, cls) {
+    if (typeof src === 'string' && src.indexOf('data:image/') === 0) {
+      var i = document.createElement('img'); i.src = src; i.alt = ''; if (cls) i.className = cls; return i
+    }
+    var d = document.createElement('div'); d.className = 'ph'; return d
+  }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e }
+
+  function show(items) {
+    var list = $('list')
+    list.textContent = ''
+    if (!items || !items.length) { list.appendChild(el('div', 'sub', 'Nada encontrado.')); return }
+    items.forEach(function (it) {
+      var row = el('div', 'row')
+      row.appendChild(img(it.image))
+      var mid = el('div'); mid.style.minWidth = '0'
+      mid.appendChild(el('div', 'name', it.name))
+      mid.appendChild(el('div', 'sub', [it.artists, it.album, it.owner].filter(Boolean).join(' · ') || ' '))
+      row.appendChild(mid)
+      row.appendChild(el('span', 'tag', it.type === 'track' ? '▶' : it.type))
+      row.onclick = function () { play({ uri: it.uri }) }
+      list.appendChild(row)
+    })
+  }
+
+  function search() {
+    if (kind === 'mine') {
+      note('Carregando…')
+      return JARVIS.action('spotify.playlists', { limit: 30 }).then(function (r) { note(''); show(r) }).catch(fail)
+    }
+    var q = $('q').value.trim()
+    if (!q) return
+    note('Buscando…')
+    JARVIS.action('spotify.search', { query: q, type: kind, limit: 8 }).then(function (r) { note(''); show(r) }).catch(fail)
+  }
+
+  function play(args) {
+    var dev = $('device').value
+    if (dev) args.device = dev
+    note('Tocando…')
+    JARVIS.action('spotify.play', args).then(function () { note(''); setTimeout(now, 700) }).catch(fail)
+  }
+
+  function now() {
+    return JARVIS.action('spotify.now_playing').then(function (p) {
+      playing = Boolean(p && p.isPlaying)
+      $('nowTitle').textContent = (p && p.title) || 'Nada tocando'
+      $('nowSub').textContent = p && p.title ? [p.artists, p.device].filter(Boolean).join(' · ') : (p && p.device) || ' '
+      var art = img(p && p.image); art.id = 'nowArt'
+      $('nowArt').replaceWith(art)
+    }).catch(fail)
+  }
+
+  function devices() {
+    return JARVIS.action('spotify.devices').then(function (list) {
+      var sel = $('device'), keep = sel.value
+      sel.textContent = ''
+      var first = el('option', null, 'aparelho ativo'); first.value = ''; sel.appendChild(first)
+      ;(list || []).forEach(function (d) {
+        var o = el('option', null, d.name + (d.active ? ' •' : '')); o.value = d.id; sel.appendChild(o)
+      })
+      sel.value = keep
+    }).catch(function () {})
+  }
+
+  $('form').onsubmit = function (e) { e.preventDefault(); search() }
+  $('tabs').onclick = function (e) {
+    var t = e.target && e.target.getAttribute('data-t')
+    if (!t) return
+    kind = t
+    Array.prototype.forEach.call($('tabs').children, function (b) { b.className = b === e.target ? 'on' : '' })
+    search()
+  }
+  function ctl(name) {
+    JARVIS.action(name).then(function () { setTimeout(now, 600) }).catch(fail)
+  }
+  $('prev').onclick = function () { ctl('spotify.previous') }
+  $('next').onclick = function () { ctl('spotify.next') }
+  $('toggle').onclick = function () { if (playing) ctl('spotify.pause'); else play({}) }
+  $('device').onchange = function () {
+    var id = $('device').value
+    if (id) JARVIS.action('spotify.transfer', { device: id }).then(function () { setTimeout(now, 800) }).catch(fail)
+  }
+
+  var start = window.JARVIS_DATA && window.JARVIS_DATA.query
+  if (start) { $('q').value = start; search() }
+  addEventListener('jarvis:data', function (e) { if (e.detail && e.detail.query) { $('q').value = e.detail.query; search() } })
+  now(); devices()
+  setInterval(function () { if (document.visibilityState !== 'hidden') now() }, 5000)
+  setInterval(function () { if (document.visibilityState !== 'hidden') devices() }, 20000)
+})()
+</script>
+</body>
+</html>
