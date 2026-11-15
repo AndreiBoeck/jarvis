@@ -1,6 +1,15 @@
 import type { AskHandlers } from './anthropic'
 import type { Blade, Panel } from '../store'
-import { BRIDGE_WS_URL, IS_APP, IS_REMOTE, bridgeProtocols, setMediaKey } from '../config'
+import {
+  BRIDGE_HTTP_URL,
+  BRIDGE_WS_URL,
+  IS_APP,
+  IS_REMOTE,
+  bridgeHeaders,
+  bridgeProtocols,
+  setMediaKey,
+} from '../config'
+import { reconnectDelay, shouldReconnect } from './backoff'
 
 /**
  * Client for the local bridge (see bridge/server.mjs).
@@ -175,21 +184,53 @@ let firstReady = deferred()
 
 let everConnected = false
 
-/** Backoff for the automatic re-dial. It gives up after the last delay rather
- *  than retrying forever — a bridge that has been down for half a minute is
- *  usually one you stopped on purpose, and the next ask() re-dials anyway. */
-const RECONNECT_DELAYS = [500, 1000, 2000, 4000, 8000, 8000]
+/**
+ * The automatic re-dial: from half a second up to every ten, for as long as it
+ * takes, and back to half a second once connected (backoff.ts).
+ *
+ * It used to give up after six tries — and in fact after one, because a dial
+ * that failed never scheduled the next. Restart the bridge and the interface
+ * stayed dark until the next question, and a live browser blade never got its
+ * tab back. It stops only when stopping is right: the interface closed the
+ * socket itself, the bridge closed it on purpose, or the bridge has refused
+ * this device's token.
+ */
 let attempt = 0
 let reconnectTimer = 0
+let intentional = false
+
+/** A failed dial from a paired device: is it the token that was refused? */
+async function refused(): Promise<boolean> {
+  if (!IS_REMOTE) return false
+  try {
+    const res = await fetch(`${BRIDGE_HTTP_URL}/health`, { headers: bridgeHeaders() })
+    return res.status === 401 || res.status === 403
+  } catch {
+    return false // unreachable is not refused: keep trying
+  }
+}
 
 function scheduleReconnect() {
-  if (attempt >= RECONNECT_DELAYS.length) return
-  const delay = RECONNECT_DELAYS[attempt]
+  if (!shouldReconnect({ intentional })) return
+  const delay = reconnectDelay(attempt)
   attempt += 1
   clearTimeout(reconnectTimer)
   reconnectTimer = window.setTimeout(() => {
-    void connect().catch(() => {})
+    void connect().catch(async () => {
+      if (await refused()) {
+        console.warn('[jarvis] the bridge refused this device — not reconnecting')
+        return
+      }
+      scheduleReconnect()
+    })
   }, delay)
+}
+
+/** Close the link on purpose, and stay closed. */
+export function disconnect(): void {
+  intentional = true
+  clearTimeout(reconnectTimer)
+  socket?.close(1000, 'closed by the interface')
 }
 
 /**
@@ -295,6 +336,10 @@ function connect(): Promise<WebSocket> {
     ws.onopen = () => {
       socket = ws
       attempt = 0
+      // Dialled again on purpose (a question after disconnect()): back to
+      // re-dialling on its own if this one drops.
+      intentional = false
+      clearTimeout(reconnectTimer)
       dispatch(ws)
       settle(null)
       onConnection?.(everConnected ? 'reconnected' : 'open')
@@ -327,14 +372,14 @@ function connect(): Promise<WebSocket> {
         ),
       )
     }
-    ws.onclose = () => {
-      // A close before open is just a failed dial; after open it's a lost
-      // session, and the two want different handling.
+    ws.onclose = (ev: CloseEvent) => {
+      // A close before open is just a failed dial (the timer that made it
+      // schedules the next); after open it's a lost session.
       settle(new Error('The bridge closed the connection.'))
       if (socket === ws) {
         socket = null
         onConnection?.('lost')
-        scheduleReconnect()
+        if (shouldReconnect({ intentional, closeCode: ev.code })) scheduleReconnect()
       }
     }
   })
