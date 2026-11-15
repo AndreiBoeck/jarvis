@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /**
  * Screens JARVIS made, kept so he can open them again.
@@ -71,6 +72,21 @@ export const APP_CSP = [
 
 export const defaultScreensDir = () => join(homedir(), '.jarvis', 'screens')
 
+/**
+ * Screens that ship with JARVIS (bridge/builtin/). Code we wrote and review,
+ * not the model's, so they need no approval; they are read-only to the model,
+ * and they are offered only when every action they use exists on this bridge.
+ */
+const BUILTIN_DIR = join(dirname(fileURLToPath(import.meta.url)), 'builtin')
+export const BUILTIN_SCREENS = [
+  {
+    id: 'player',
+    name: 'Player',
+    description: 'What is playing on the PC, with its cover and play/pause, next and previous buttons.',
+    actions: ['media.now_playing', 'media.play_pause', 'media.next', 'media.previous'],
+  },
+]
+
 /** A name as an id: lowercase, a-z0-9 and dashes. Nothing that walks a path. */
 export function screenId(name) {
   return String(name ?? '')
@@ -138,7 +154,10 @@ export function appDocument(html) {
  * touched once per tool call, and a synchronous write cannot interleave with
  * another one halfway through the index.
  */
-export function screenStore(dir = defaultScreensDir(), { validAction = () => false } = {}) {
+export function screenStore(
+  dir = defaultScreensDir(),
+  { validAction = () => false, builtins = BUILTIN_SCREENS, builtinDir = BUILTIN_DIR } = {},
+) {
   const indexPath = join(dir, 'index.json')
   const fileOf = (id) => join(dir, `${id}.html`)
 
@@ -181,14 +200,35 @@ export function screenStore(dir = defaultScreensDir(), { validAction = () => fal
     return body
   }
 
+  /** The built-in screens usable here, as index entries. */
+  const shipped = () =>
+    builtins
+      .filter((b) => b.actions.every((a) => validAction(a)))
+      .map((b) => {
+        let updated = ''
+        try {
+          updated = statSync(join(builtinDir, `${b.id}.html`)).mtime.toISOString()
+        } catch {
+          return null
+        }
+        return { ...b, kind: 'app', fields: [], builtin: true, created: updated, updated }
+      })
+      .filter(Boolean)
+  const builtinOf = (id) => shipped().find((b) => b.id === id) ?? null
+  const reserved = (id) => builtins.some((b) => b.id === id)
+  const readOnly = (id) => {
+    if (reserved(id)) throw new Error(`"${id}" is built in and cannot be changed; save a copy under another name`)
+  }
+
   const find = (nameOrId) => {
     const id = screenId(nameOrId)
-    return id ? (readIndex().find((s) => s.id === id) ?? null) : null
+    if (!id) return null
+    return builtinOf(id) ?? readIndex().find((s) => s.id === id) ?? null
   }
 
   return {
     dir,
-    list: () => readIndex(),
+    list: () => [...shipped(), ...readIndex().filter((s) => !reserved(s.id))],
     find,
 
     /** The entry and its html, or null. */
@@ -196,7 +236,8 @@ export function screenStore(dir = defaultScreensDir(), { validAction = () => fal
       const entry = find(nameOrId)
       if (!entry) return null
       try {
-        return { ...entry, html: readFileSync(fileOf(entry.id), 'utf8') }
+        const file = entry.builtin ? join(builtinDir, `${entry.id}.html`) : fileOf(entry.id)
+        return { ...entry, html: readFileSync(file, 'utf8') }
       } catch {
         return null
       }
@@ -206,6 +247,7 @@ export function screenStore(dir = defaultScreensDir(), { validAction = () => fal
     save({ name, description = '', kind = 'template', html, actions }) {
       const id = screenId(name)
       if (!id) throw new Error('a screen needs a name')
+      if (reserved(id)) throw new Error(`"${id}" is the name of a built-in screen; choose another`)
       const body = validate({ kind, html })
       const declared = checkActions(kind, actions)
       const screens = readIndex()
@@ -231,6 +273,7 @@ export function screenStore(dir = defaultScreensDir(), { validAction = () => fal
     },
 
     update(nameOrId, { description, kind, html, actions } = {}) {
+      readOnly(screenId(nameOrId))
       const screens = readIndex()
       const at = screens.findIndex((s) => s.id === screenId(nameOrId))
       if (at < 0) throw new Error(`no screen called "${nameOrId}"`)
@@ -277,6 +320,7 @@ export function screenStore(dir = defaultScreensDir(), { validAction = () => fal
      * changed since, the click approves nothing.
      */
     approve(nameOrId, hash) {
+      if (builtinOf(screenId(nameOrId))) return true
       const screens = readIndex()
       const at = screens.findIndex((s) => s.id === screenId(nameOrId))
       if (at < 0) return false
@@ -293,6 +337,7 @@ export function screenStore(dir = defaultScreensDir(), { validAction = () => fal
     },
 
     forget(nameOrId) {
+      readOnly(screenId(nameOrId))
       const screens = readIndex()
       const id = screenId(nameOrId)
       const entry = screens.find((s) => s.id === id)

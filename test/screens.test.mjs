@@ -139,37 +139,37 @@ test('actions: declared on save, only known names, only on app screens', () => {
 test('approval is a hash of html + actions, and any change to either voids it', () => {
   const { dir, store, done } = fresh()
   try {
-    store.save({ name: 'Player', kind: 'app', html: '<b>v1</b>', actions: ['media.next'] })
-    let saved = store.get('player')
+    store.save({ name: 'Deck', kind: 'app', html: '<b>v1</b>', actions: ['media.next'] })
+    let saved = store.get('deck')
     assert.equal(store.isApproved(saved), false, 'not approved on save')
     const hash = store.hashOf(saved)
     assert.equal(hash, approvalHash('<b>v1</b>', ['media.next']))
-    assert.equal(store.approve('player', 'not-the-hash'), false)
-    assert.equal(store.approve('player', hash), true)
-    assert.equal(store.isApproved(store.get('player')), true)
-    assert.equal(screenStore(dir, { validAction: (a) => KNOWN.has(a) }).isApproved(screenStore(dir).get('player')), true, 'persists')
+    assert.equal(store.approve('deck', 'not-the-hash'), false)
+    assert.equal(store.approve('deck', hash), true)
+    assert.equal(store.isApproved(store.get('deck')), true)
+    assert.equal(screenStore(dir, { validAction: (a) => KNOWN.has(a) }).isApproved(screenStore(dir).get('deck')), true, 'persists')
 
     // Description only: still the same screen.
-    store.update('player', { description: 'now playing' })
-    assert.equal(store.isApproved(store.get('player')), true)
+    store.update('deck', { description: 'now playing' })
+    assert.equal(store.isApproved(store.get('deck')), true)
 
     // New html: the old approval is gone, and the old hash approves nothing.
-    store.update('player', { html: '<b>v2</b>' })
-    saved = store.get('player')
+    store.update('deck', { html: '<b>v2</b>' })
+    saved = store.get('deck')
     assert.equal(store.isApproved(saved), false)
-    assert.equal(store.approve('player', hash), false, 'a card shown for v1 cannot approve v2')
-    assert.equal(store.approve('player', store.hashOf(saved)), true)
+    assert.equal(store.approve('deck', hash), false, 'a card shown for v1 cannot approve v2')
+    assert.equal(store.approve('deck', store.hashOf(saved)), true)
 
     // New actions: the same.
-    store.update('player', { actions: ['media.next', 'media.play_pause'] })
-    assert.equal(store.isApproved(store.get('player')), false)
+    store.update('deck', { actions: ['media.next', 'media.play_pause'] })
+    assert.equal(store.isApproved(store.get('deck')), false)
 
     // Order does not matter to the hash.
     assert.equal(approvalHash('x', ['b', 'a']), approvalHash('x', ['a', 'b']))
     // A file edited behind the index's back is not approved either.
-    store.approve('player', store.hashOf(store.get('player')))
-    writeFileSync(join(dir, 'player.html'), '<b>tampered</b>')
-    assert.equal(store.isApproved(store.get('player')), false)
+    store.approve('deck', store.hashOf(store.get('deck')))
+    writeFileSync(join(dir, 'deck.html'), '<b>tampered</b>')
+    assert.equal(store.isApproved(store.get('deck')), false)
   } finally {
     done()
   }
@@ -193,4 +193,36 @@ test('the shim offers JARVIS.action and hears only its parent', () => {
   assert.match(doc, /e\.source!==parent/)
   assert.match(doc, /jarvis:'action'/)
   assert.match(doc, /'action-result'/)
+})
+
+test('built-in screens: shipped, pre-approved, read-only, offered only when their actions exist', async () => {
+  const { BUILTIN_SCREENS } = await import('../bridge/screens.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'jarvis-screens-'))
+  try {
+    const all = screenStore(dir, { validAction: () => true })
+    const player = all.get('player')
+    assert.ok(player, 'the player ships')
+    assert.equal(player.builtin, true)
+    assert.equal(player.kind, 'app')
+    assert.match(player.html, /JARVIS\.action\('media\.now_playing'/)
+    assert.equal(all.isApproved(player), true)
+    assert.equal(all.approve('player', 'anything'), true)
+    assert.deepEqual(player.actions, BUILTIN_SCREENS.find((b) => b.id === 'player').actions)
+    assert.equal(all.list()[0].id, 'player')
+
+    assert.throws(() => all.save({ name: 'Player', kind: 'app', html: '<b>x</b>' }), /built-in/)
+    assert.throws(() => all.update('player', { html: '<b>evil</b>' }), /built in/)
+    assert.throws(() => all.forget('player'), /built in/)
+
+    // Every action the player calls is one it declared.
+    const called = [...player.html.matchAll(/JARVIS\.action\('([\w.]+)'/g)].map((m) => m[1])
+    const pressed = [...player.html.matchAll(/press\('([\w.]+)'\)/g)].map((m) => m[1])
+    for (const a of [...called, ...pressed]) assert.ok(player.actions.includes(a), a)
+
+    const none = screenStore(dir, { validAction: () => false })
+    assert.equal(none.get('player'), null, 'without media actions there is no player')
+    assert.equal(none.list().length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

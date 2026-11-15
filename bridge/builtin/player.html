@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Player</title>
+<style>
+  :root {
+    --c: #7fe8ff;
+    --dim: rgba(127, 232, 255, 0.45);
+    --line: rgba(127, 232, 255, 0.18);
+  }
+  * { box-sizing: border-box }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+    color: var(--c);
+    font: 400 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow: hidden;
+    user-select: none;
+  }
+  .wrap {
+    height: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 18px;
+    align-items: center;
+    padding: 18px 20px;
+  }
+  .art {
+    width: min(38vh, 38vw, 220px);
+    aspect-ratio: 1;
+    border: 1px solid var(--line);
+    background: rgba(0, 0, 0, 0.35);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+  .art img { width: 100%; height: 100%; object-fit: cover; display: none }
+  .art.has img { display: block }
+  .art.has svg { display: none }
+  .info { min-width: 0; display: flex; flex-direction: column; gap: 6px }
+  .app { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim) }
+  .title {
+    font-size: clamp(15px, 3.4vw, 22px);
+    color: #dff9ff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .artist { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .bar { height: 3px; background: var(--line); margin-top: 8px; position: relative }
+  .bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--c); box-shadow: 0 0 8px var(--c) }
+  .times { display: flex; justify-content: space-between; font-size: 10px; color: var(--dim) }
+  .buttons { display: flex; gap: 10px; margin-top: 8px }
+  button {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--c);
+    width: 46px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background 140ms ease, border-color 140ms ease;
+  }
+  button:hover { background: rgba(127, 232, 255, 0.12); border-color: rgba(127, 232, 255, 0.5) }
+  button:active { background: rgba(127, 232, 255, 0.24) }
+  button.main { width: 58px; border-color: rgba(127, 232, 255, 0.45) }
+  button svg { width: 18px; height: 18px; fill: currentColor }
+  .note { min-height: 1.4em; font-size: 11px; color: var(--dim) }
+  .note.err { color: #ffb4a8 }
+  @media (max-width: 420px) {
+    .wrap { grid-template-columns: 1fr; justify-items: center; text-align: center }
+    .info { width: 100%; align-items: center }
+    .bar, .times { width: 100% }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="art" id="art">
+    <img id="cover" alt="">
+    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1" opacity="0.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg>
+  </div>
+  <div class="info">
+    <div class="app" id="app">—</div>
+    <div class="title" id="title">Nada tocando</div>
+    <div class="artist" id="artist">&nbsp;</div>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+    <div class="buttons">
+      <button id="prev" title="Anterior" aria-label="Anterior"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button id="toggle" class="main" title="Tocar/pausar" aria-label="Tocar/pausar"><svg viewBox="0 0 24 24" id="toggleIcon"><path d="M8 5v14l11-7z"/></svg></button>
+      <button id="next" title="Próxima" aria-label="Próxima"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+    </div>
+    <div class="note" id="note"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id) }
+  var PLAY = 'M8 5v14l11-7z'
+  var PAUSE = 'M6 5h4v14H6zM14 5h4v14h-4z'
+  var state = null      // the last track, with `at` = when it was read
+  var artKey = ''
+  var busy = false
+  var timer = null
+
+  function clock(s) {
+    s = Math.max(0, Math.floor(s || 0))
+    var m = Math.floor(s / 60), r = s % 60
+    return m + ':' + (r < 10 ? '0' : '') + r
+  }
+
+  function note(text, err) {
+    $('note').textContent = text || ''
+    $('note').className = 'note' + (err ? ' err' : '')
+  }
+
+  function why(err) {
+    var code = err && err.code
+    if (code === 'not-approved') return 'Permita as ações desta tela no cartão acima.'
+    if (code === 'offline') return 'Sem conexão com a bridge.'
+    if (code === 'rate-limited') return 'Devagar…'
+    return (err && err.message) || 'Não deu.'
+  }
+
+  function paint() {
+    var t = state
+    if (!t) {
+      $('app').textContent = '—'
+      $('title').textContent = 'Nada tocando'
+      $('artist').innerHTML = '&nbsp;'
+      $('fill').style.width = '0'
+      $('pos').textContent = $('dur').textContent = '0:00'
+      $('toggleIcon').firstChild.setAttribute('d', PLAY)
+      return
+    }
+    var pos = t.position || 0
+    if (t.status === 'playing') pos += (Date.now() - t.at) / 1000
+    if (t.duration) pos = Math.min(pos, t.duration)
+    $('app').textContent = t.app || ''
+    $('title').textContent = t.title || '—'
+    $('artist').textContent = [t.artist, t.album].filter(Boolean).join(' · ') || ' '
+    $('fill').style.width = t.duration ? (100 * pos / t.duration).toFixed(2) + '%' : '0'
+    $('pos').textContent = clock(pos)
+    $('dur').textContent = t.duration ? clock(t.duration) : '–:––'
+    $('toggleIcon').firstChild.setAttribute('d', t.status === 'playing' ? PAUSE : PLAY)
+  }
+
+  function cover(t) {
+    if (!t) { $('art').className = 'art'; artKey = ''; return }
+    if (t.artSame) return
+    if (typeof t.art === 'string' && t.art.indexOf('data:image/') === 0) {
+      $('cover').src = t.art
+      $('art').className = 'art has'
+      artKey = t.artKey || ''
+    } else {
+      $('art').className = 'art'
+      artKey = ''
+    }
+  }
+
+  function refresh() {
+    return JARVIS.action('media.now_playing', artKey ? { have: artKey } : {}).then(function (t) {
+      state = t ? Object.assign({}, t, { at: Date.now() }) : null
+      cover(t)
+      paint()
+      if ($('note').className.indexOf('err') >= 0) note('')
+    }).catch(function (err) { note(why(err), true) })
+  }
+
+  function press(name) {
+    if (busy) return
+    busy = true
+    JARVIS.action(name).then(function () {
+      note('')
+      // Players take a moment to report the new state.
+      setTimeout(refresh, 350)
+      setTimeout(refresh, 1200)
+    }).catch(function (err) { note(why(err), true) }).then(function () { busy = false })
+  }
+
+  $('prev').onclick = function () { press('media.previous') }
+  $('next').onclick = function () { press('media.next') }
+  $('toggle').onclick = function () {
+    if (state) state.status = state.status === 'playing' ? 'paused' : 'playing'
+    if (state) { state.at = Date.now(); paint() }
+    press('media.play_pause')
+  }
+
+  function loop() {
+    clearTimeout(timer)
+    if (document.visibilityState === 'hidden') { timer = setTimeout(loop, 4000); return }
+    refresh().then(function () { timer = setTimeout(loop, 2000) })
+  }
+  setInterval(paint, 500)
+  document.addEventListener('visibilitychange', loop)
+  loop()
+})()
+</script>
+</body>
+</html>

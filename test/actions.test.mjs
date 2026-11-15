@@ -51,11 +51,11 @@ test('policy: device tools by tier, not by verb; screens get allow / confirm / d
 test('an approved screen runs a declared action', async () => {
   const { store, channel, done } = setup()
   try {
-    approved(store, 'player', '<b>p</b>', ['media.next', 'media.now_playing'])
+    approved(store, 'deck', '<b>p</b>', ['media.next', 'media.now_playing'])
     calls.length = 0
-    assert.deepEqual(await channel.handle({ screen: 'player', name: 'media.next' }), { ok: true, result: { done: 'next' } })
+    assert.deepEqual(await channel.handle({ screen: 'deck', name: 'media.next' }), { ok: true, result: { done: 'next' } })
     assert.deepEqual(calls, ['next'])
-    const np = await channel.handle({ screen: 'player', name: 'media.now_playing', args: { app: 'spot' } })
+    const np = await channel.handle({ screen: 'deck', name: 'media.now_playing', args: { app: 'spot' } })
     assert.deepEqual(np, { ok: true, result: { title: 'Song', app: 'spot' } })
   } finally {
     done()
@@ -65,14 +65,14 @@ test('an approved screen runs a declared action', async () => {
 test('refusals: undeclared, unapproved, changed since approval, unknown screen, bad args', async () => {
   const { store, channel, done } = setup()
   try {
-    approved(store, 'player', '<b>p</b>', ['media.now_playing'])
-    assert.equal((await channel.handle({ screen: 'player', name: 'media.next' })).code, 'not-declared')
+    approved(store, 'deck', '<b>p</b>', ['media.now_playing'])
+    assert.equal((await channel.handle({ screen: 'deck', name: 'media.next' })).code, 'not-declared')
 
     store.save({ name: 'fresh', kind: 'app', html: '<b>f</b>', actions: ['media.next'] })
     assert.equal((await channel.handle({ screen: 'fresh', name: 'media.next' })).code, 'not-approved')
 
-    store.update('player', { html: '<b>changed by the model</b>' })
-    assert.equal((await channel.handle({ screen: 'player', name: 'media.now_playing' })).code, 'not-approved')
+    store.update('deck', { html: '<b>changed by the model</b>' })
+    assert.equal((await channel.handle({ screen: 'deck', name: 'media.now_playing' })).code, 'not-approved')
 
     assert.equal((await channel.handle({ screen: 'nope', name: 'media.next' })).code, 'no-screen')
     store.save({ name: 'tpl', html: '<b>{{x}}</b>' })
