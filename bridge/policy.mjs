@@ -138,6 +138,54 @@ export const PHONE_READS = new Set([
 /** The jarvis_mac tools that only look (bridge/mac.mjs). Everything else there acts. */
 export const MAC_READS = new Set(['status', 'list_apps', 'read_screen', 'screenshot', 'read_clipboard'])
 
+/**
+ * Device actions: what JARVIS can do to the machine the bridge runs on (and
+ * to Spotify), as one table of names and how much each one is trusted.
+ *
+ *   safe    — local, reversible, nothing leaves the machine: play, pause, the
+ *             volume, locking the screen. Runs without JARVIS_ALLOW_WRITES,
+ *             from the model or from a saved screen's button.
+ *   confirm — opens something or puts the machine to sleep. From the model it
+ *             needs JARVIS_ALLOW_WRITES; from a saved screen the user clicks
+ *             "Permitir" on a card the screen itself cannot draw or reach.
+ *
+ * Anything not in this table does not exist as far as the action channel is
+ * concerned (bridge/actions.mjs refuses to register it), which is the point:
+ * a shell, a file, a message or a call is never one button away.
+ */
+export const DEVICE_ACTIONS = Object.freeze({
+  'media.now_playing': 'safe',
+  'media.sessions': 'safe',
+  'media.play': 'safe',
+  'media.pause': 'safe',
+  'media.play_pause': 'safe',
+  'media.next': 'safe',
+  'media.previous': 'safe',
+})
+
+/** The MCP servers built from DEVICE_ACTIONS, and which prefix each carries. */
+export const DEVICE_SERVERS = Object.freeze({
+  jarvis_media: 'media',
+  jarvis_pc: 'system',
+  jarvis_spotify: 'spotify',
+})
+
+/** An action's tier, or null when it is not a device action at all. */
+export const actionTier = (name) =>
+  Object.hasOwn(DEVICE_ACTIONS, name) ? DEVICE_ACTIONS[name] : null
+
+/**
+ * What a saved screen's request for an action gets: 'allow', 'confirm' (ask
+ * the user on the HUD first) or 'deny'. Whether the screen declared it and was
+ * approved is checked before this, in actions.mjs.
+ */
+export function decideScreenAction(name) {
+  const tier = actionTier(name)
+  if (tier === 'safe') return 'allow'
+  if (tier === 'confirm') return 'confirm'
+  return 'deny'
+}
+
 export function decideTool(name, allowWrites = false) {
   if (READ_ONLY_BUILTINS.has(name)) return true
   if (WRITE_BUILTINS.has(name)) return allowWrites
@@ -187,6 +235,13 @@ export function decideTool(name, allowWrites = false) {
     // The Mac, the same way: looking runs freely, acting waits for
     // allowWrites, and an iMessage or a Shortcut is confirmed again on the Mac.
     if (server === 'jarvis_mac') return MAC_READS.has(tool) || allowWrites
+
+    // Device actions on this machine (media, volume, Spotify): by the table
+    // above, not by verbs — `play` and `lock` say nothing about their risk.
+    if (Object.hasOwn(DEVICE_SERVERS, server)) {
+      const tier = actionTier(`${DEVICE_SERVERS[server]}.${tool}`)
+      return tier === 'safe' || (tier === 'confirm' && allowWrites)
+    }
 
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
       return allowWrites

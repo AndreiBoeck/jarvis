@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   APP_CSP,
   MAX_SCREEN_BYTES,
+  approvalHash,
   MAX_SCREENS,
   appDocument,
   fillTemplate,
@@ -14,9 +15,14 @@ import {
   templateFields,
 } from '../bridge/screens.mjs'
 
+const KNOWN = new Set(['media.play_pause', 'media.next', 'media.now_playing'])
 const fresh = () => {
   const dir = mkdtempSync(join(tmpdir(), 'jarvis-screens-'))
-  return { dir, store: screenStore(dir), done: () => rmSync(dir, { recursive: true, force: true }) }
+  return {
+    dir,
+    store: screenStore(dir, { validAction: (a) => KNOWN.has(a) }),
+    done: () => rmSync(dir, { recursive: true, force: true }),
+  }
 }
 
 test('save, list, get, update, forget — and it survives a new store on the same folder', () => {
@@ -105,7 +111,7 @@ test('a template is filled with escaped text, never markup', () => {
 
 test('an app screen: the data shim runs first, and the CSP lets nothing leave', () => {
   const doc = appDocument('<html><head><title>t</title></head><body><script>go()</script></body></html>')
-  assert.ok(doc.indexOf("m.jarvis!=='data'") < doc.indexOf('go()'), 'shim before the screen code')
+  assert.ok(doc.indexOf("m.jarvis==='data'") < doc.indexOf('go()'), 'shim before the screen code')
   assert.match(appDocument('<p>bare</p>'), /^<!doctype html>.*JARVIS_DATA.*<p>bare<\/p>/s)
   // A transparent screen must not be painted white behind (iframe is dark).
   assert.match(doc, /<meta name="color-scheme" content="dark">/)
@@ -113,4 +119,78 @@ test('an app screen: the data shim runs first, and the CSP lets nothing leave', 
     assert.ok(APP_CSP.includes(rule), rule)
   }
   assert.doesNotMatch(APP_CSP, /https?:|'self'|\*/, 'no remote origin anywhere')
+})
+
+test('actions: declared on save, only known names, only on app screens', () => {
+  const { store, done } = fresh()
+  try {
+    const e = store.save({ name: 'p', kind: 'app', html: '<b>p</b>', actions: ['media.next', 'media.next', 'media.play_pause'] })
+    assert.deepEqual(e.actions, ['media.next', 'media.play_pause'], 'deduplicated')
+    assert.equal(e.approval, null)
+    assert.throws(() => store.save({ name: 'q', kind: 'app', html: '<b>q</b>', actions: ['system.shell'] }), /unknown action/)
+    assert.throws(() => store.save({ name: 'r', html: '<b>{{x}}</b>', actions: ['media.next'] }), /only an app screen/)
+    assert.throws(() => store.save({ name: 's', kind: 'app', html: '<b>s</b>', actions: 'media.next' }), /list/)
+    assert.deepEqual(store.save({ name: 't', kind: 'app', html: '<b>t</b>' }).actions, [])
+  } finally {
+    done()
+  }
+})
+
+test('approval is a hash of html + actions, and any change to either voids it', () => {
+  const { dir, store, done } = fresh()
+  try {
+    store.save({ name: 'Player', kind: 'app', html: '<b>v1</b>', actions: ['media.next'] })
+    let saved = store.get('player')
+    assert.equal(store.isApproved(saved), false, 'not approved on save')
+    const hash = store.hashOf(saved)
+    assert.equal(hash, approvalHash('<b>v1</b>', ['media.next']))
+    assert.equal(store.approve('player', 'not-the-hash'), false)
+    assert.equal(store.approve('player', hash), true)
+    assert.equal(store.isApproved(store.get('player')), true)
+    assert.equal(screenStore(dir, { validAction: (a) => KNOWN.has(a) }).isApproved(screenStore(dir).get('player')), true, 'persists')
+
+    // Description only: still the same screen.
+    store.update('player', { description: 'now playing' })
+    assert.equal(store.isApproved(store.get('player')), true)
+
+    // New html: the old approval is gone, and the old hash approves nothing.
+    store.update('player', { html: '<b>v2</b>' })
+    saved = store.get('player')
+    assert.equal(store.isApproved(saved), false)
+    assert.equal(store.approve('player', hash), false, 'a card shown for v1 cannot approve v2')
+    assert.equal(store.approve('player', store.hashOf(saved)), true)
+
+    // New actions: the same.
+    store.update('player', { actions: ['media.next', 'media.play_pause'] })
+    assert.equal(store.isApproved(store.get('player')), false)
+
+    // Order does not matter to the hash.
+    assert.equal(approvalHash('x', ['b', 'a']), approvalHash('x', ['a', 'b']))
+    // A file edited behind the index's back is not approved either.
+    store.approve('player', store.hashOf(store.get('player')))
+    writeFileSync(join(dir, 'player.html'), '<b>tampered</b>')
+    assert.equal(store.isApproved(store.get('player')), false)
+  } finally {
+    done()
+  }
+})
+
+test('a screen with no actions needs no approval; turning it into a template drops them', () => {
+  const { store, done } = fresh()
+  try {
+    store.save({ name: 'calc', kind: 'app', html: '<b>1+1</b>' })
+    assert.equal(store.isApproved(store.get('calc')), true)
+    store.save({ name: 'p2', kind: 'app', html: '<b>p</b>', actions: ['media.next'] })
+    assert.deepEqual(store.update('p2', { kind: 'template', html: '<b>{{x}}</b>' }).actions, [])
+  } finally {
+    done()
+  }
+})
+
+test('the shim offers JARVIS.action and hears only its parent', () => {
+  const doc = appDocument('<p>x</p>')
+  assert.match(doc, /window\.JARVIS=\{action:/)
+  assert.match(doc, /e\.source!==parent/)
+  assert.match(doc, /jarvis:'action'/)
+  assert.match(doc, /'action-result'/)
 })

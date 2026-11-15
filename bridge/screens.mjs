@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -26,9 +27,25 @@ import { join } from 'node:path'
  *              so it runs in an opaque origin that can reach neither the
  *              interface, nor the bridge's socket, nor the token. Its data
  *              arrives by postMessage and only that way.
+ *
+ * An app screen can also DO things, narrowly: it declares, when it is saved,
+ * which device actions it may ask for (`actions`, names from actions.mjs), and
+ * asks with JARVIS.action(name, args) — a postMessage the interface forwards.
+ * Nothing runs until the user has approved that exact screen: the approval is
+ * a hash of its html and its action list, so any change voids it.
  */
 
 export const SCREEN_KINDS = ['template', 'app']
+export const MAX_SCREEN_ACTIONS = 16
+
+/**
+ * What the user approves: this html with these actions. Sorted, so declaring
+ * the same actions in another order is the same screen.
+ */
+export function approvalHash(html, actions = []) {
+  const list = [...new Set(actions)].sort()
+  return createHash('sha256').update(String(html)).update('\0').update(JSON.stringify(list)).digest('hex')
+}
 export const MAX_SCREENS = 64
 export const MAX_SCREEN_BYTES = 100 * 1024
 
@@ -91,18 +108,21 @@ export function templateFields(html) {
 }
 
 /**
- * The shim put at the top of every app screen: it turns the interface's
- * postMessage into a `jarvis:data` event and keeps the last value on
- * window.JARVIS_DATA, so a screen can read it whichever arrives first.
- */
-/**
  * Dark, declared. The blade's iframe is color-scheme: dark; a document that
  * does not say the same gets an opaque white backdrop painted behind it by the
  * browser, so a screen written with a transparent background turns up white.
  */
 const APP_SCHEME = '<meta name="color-scheme" content="dark"><style>:root{color-scheme:dark}</style>'
 
-const APP_SHIM = `<script>(function(){window.JARVIS_DATA=window.JARVIS_DATA||null;addEventListener('message',function(e){var m=e.data;if(!m||m.jarvis!=='data')return;window.JARVIS_DATA=m.data;dispatchEvent(new CustomEvent('jarvis:data',{detail:m.data}))});})();</script>`
+/**
+ * The shim put at the top of every app screen. Data in: the interface's
+ * postMessage becomes a `jarvis:data` event, the last value kept on
+ * window.JARVIS_DATA so a screen can read it whichever arrives first. And
+ * JARVIS.action(name, args) out. Only messages from the
+ * parent window are heard — another frame cannot pose as the interface — and
+ * every action answer is matched to its request by id.
+ */
+const APP_SHIM = `<script>(function(){var P={},n=0;window.JARVIS_DATA=window.JARVIS_DATA||null;window.JARVIS={action:function(name,args){return new Promise(function(ok,no){var id='a'+(++n);P[id]={ok:ok,no:no};parent.postMessage({jarvis:'action',id:id,name:String(name),args:args||{}},'*');setTimeout(function(){if(P[id]){delete P[id];no(new Error('no answer'))}},120000)})}};addEventListener('message',function(e){if(e.source!==parent)return;var m=e.data;if(!m)return;if(m.jarvis==='data'){window.JARVIS_DATA=m.data;dispatchEvent(new CustomEvent('jarvis:data',{detail:m.data}))}else if(m.jarvis==='action-result'&&P[m.id]){var p=P[m.id];delete P[m.id];if(m.ok)p.ok(m.result);else{var err=new Error(m.error||'refused');err.code=m.code;p.no(err)}}})})();</script>`
 
 /** An app screen as served: shim first, so it is listening before the screen's own code runs. */
 export function appDocument(html) {
@@ -118,7 +138,7 @@ export function appDocument(html) {
  * touched once per tool call, and a synchronous write cannot interleave with
  * another one halfway through the index.
  */
-export function screenStore(dir = defaultScreensDir()) {
+export function screenStore(dir = defaultScreensDir(), { validAction = () => false } = {}) {
   const indexPath = join(dir, 'index.json')
   const fileOf = (id) => join(dir, `${id}.html`)
 
@@ -139,6 +159,17 @@ export function screenStore(dir = defaultScreensDir()) {
     }
   }
   const writeIndex = (screens) => atomic(indexPath, JSON.stringify({ screens }, null, 1))
+
+  const checkActions = (kind, actions) => {
+    if (actions === undefined || actions === null) return []
+    if (!Array.isArray(actions)) throw new Error('actions must be a list of action names')
+    const list = [...new Set(actions.map((a) => String(a).trim()).filter(Boolean))]
+    if (list.length && kind !== 'app') throw new Error('only an app screen can have actions')
+    if (list.length > MAX_SCREEN_ACTIONS) throw new Error(`a screen has at most ${MAX_SCREEN_ACTIONS} actions`)
+    const unknown = list.filter((a) => !validAction(a))
+    if (unknown.length) throw new Error(`unknown action${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`)
+    return list
+  }
 
   const validate = ({ kind, html }) => {
     if (!SCREEN_KINDS.includes(kind)) throw new Error(`kind must be one of: ${SCREEN_KINDS.join(', ')}`)
@@ -172,10 +203,11 @@ export function screenStore(dir = defaultScreensDir()) {
     },
 
     /** A new screen. Refuses a name that is taken: that is what update is for. */
-    save({ name, description = '', kind = 'template', html }) {
+    save({ name, description = '', kind = 'template', html, actions }) {
       const id = screenId(name)
       if (!id) throw new Error('a screen needs a name')
       const body = validate({ kind, html })
+      const declared = checkActions(kind, actions)
       const screens = readIndex()
       if (screens.some((s) => s.id === id)) throw new Error(`there is already a screen called "${id}"`)
       if (screens.length >= MAX_SCREENS) {
@@ -188,6 +220,8 @@ export function screenStore(dir = defaultScreensDir()) {
         description: String(description).trim().slice(0, 300),
         kind,
         fields: kind === 'template' ? templateFields(body) : [],
+        actions: declared,
+        approval: null,
         created: now,
         updated: now,
       }
@@ -196,7 +230,7 @@ export function screenStore(dir = defaultScreensDir()) {
       return entry
     },
 
-    update(nameOrId, { description, kind, html } = {}) {
+    update(nameOrId, { description, kind, html, actions } = {}) {
       const screens = readIndex()
       const at = screens.findIndex((s) => s.id === screenId(nameOrId))
       if (at < 0) throw new Error(`no screen called "${nameOrId}"`)
@@ -209,11 +243,53 @@ export function screenStore(dir = defaultScreensDir()) {
         entry.kind = nextKind
         entry.fields = nextKind === 'template' ? templateFields(body) : []
       }
+      if (actions !== undefined || kind !== undefined) {
+        entry.actions = checkActions(
+          nextKind,
+          actions !== undefined ? actions : nextKind === 'app' ? (entry.actions ?? []) : [],
+        )
+      }
+      // The user approved what the screen was. Anything that changes what it
+      // runs or what it may ask for is a new screen to them.
+      if (html !== undefined || kind !== undefined || actions !== undefined) entry.approval = null
       if (description !== undefined) entry.description = String(description).trim().slice(0, 300)
       entry.updated = new Date().toISOString()
       screens[at] = entry
       writeIndex(screens)
       return entry
+    },
+
+    /** Approved, if the user's approval matches the screen as it is now. */
+    isApproved(saved) {
+      if (!saved) return false
+      if (saved.builtin) return true
+      if (!(saved.actions ?? []).length) return true
+      return Boolean(saved.approval) && saved.approval === approvalHash(saved.html ?? '', saved.actions)
+    },
+
+    /** What approving this screen as it is now would record. */
+    hashOf(saved) {
+      return approvalHash(saved?.html ?? '', saved?.actions ?? [])
+    },
+
+    /**
+     * The user's click. `hash` is what the card showed them; if the screen has
+     * changed since, the click approves nothing.
+     */
+    approve(nameOrId, hash) {
+      const screens = readIndex()
+      const at = screens.findIndex((s) => s.id === screenId(nameOrId))
+      if (at < 0) return false
+      let html
+      try {
+        html = readFileSync(fileOf(screens[at].id), 'utf8')
+      } catch {
+        return false
+      }
+      if (!hash || hash !== approvalHash(html, screens[at].actions ?? [])) return false
+      screens[at] = { ...screens[at], approval: hash }
+      writeIndex(screens)
+      return true
     },
 
     forget(nameOrId) {

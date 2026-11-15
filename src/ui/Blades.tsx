@@ -8,6 +8,7 @@ import * as camera from '../lib/camera'
 import { sendLive, subscribeLive } from '../lib/live'
 import { sendCam, subscribeCam } from '../lib/camfeed'
 import { minutesLeft } from '../lib/camStatus'
+import { approveScreen, describeArgs, screenAction, subscribeConfirm, type ConfirmRequest } from '../lib/screens'
 import { addressToUrl, modsOf, toPage, touchKind, wheelPixels } from '../lib/livePointer'
 
 /**
@@ -271,22 +272,137 @@ const RemoteCameraView = memo(function RemoteCameraView({ blade }: { blade: Blad
  * here with allow-scripts and no allow-same-origin — an opaque origin that can
  * reach neither this page, nor the socket, nor the token. Its data goes in by
  * postMessage, the only door it has.
+ *
+ * A screen that declared device actions can also ask for them, by postMessage
+ * the other way (bridge/actions.mjs). Heard only from this blade's own iframe,
+ * with the screen id taken from the blade rather than from the message. The
+ * approval and confirmation cards are drawn here, in the interface, where the
+ * screen's code cannot reach them or click them.
  */
 const ScreenView = memo(function ScreenView({ blade }: { blade: Blade }) {
   const frame = useRef<HTMLIFrameElement>(null)
   const post = () => frame.current?.contentWindow?.postMessage({ jarvis: 'data', data: blade.data ?? null }, '*')
   useEffect(post, [blade.data])
+
+  const screenId = useMemo(() => {
+    try {
+      return new URL(blade.url ?? '', 'http://x').searchParams.get('id') ?? ''
+    } catch {
+      return ''
+    }
+  }, [blade.url])
+  const declared = blade.actions ?? []
+  const [approved, setApproved] = useState(!declared.length || blade.approved === true)
+  const [dismissed, setDismissed] = useState(false)
+  const [approving, setApproving] = useState(false)
+  const [asking, setAsking] = useState<(ConfirmRequest & { resolve: (ok: boolean) => void }) | null>(null)
+
+  useEffect(() => {
+    setApproved(!(blade.actions ?? []).length || blade.approved === true)
+    setDismissed(false)
+  }, [blade.actions, blade.approved, blade.approval])
+
+  useEffect(() => {
+    if (!screenId) return
+    const onMessage = (e: MessageEvent) => {
+      const win = frame.current?.contentWindow
+      if (!win || e.source !== win) return
+      const m = e.data as { jarvis?: string; id?: unknown; name?: unknown; args?: unknown } | null
+      if (!m || m.jarvis !== 'action' || typeof m.id !== 'string') return
+      const id = m.id
+      void screenAction(screenId, String(m.name ?? ''), m.args).then((answer) =>
+        win.postMessage({ jarvis: 'action-result', id, ...answer }, '*'),
+      )
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [screenId])
+
+  useEffect(() => {
+    if (!screenId) return
+    let open: ((ok: boolean) => void) | null = null
+    const off = subscribeConfirm(
+      screenId,
+      (req) =>
+        new Promise<boolean>((resolve) => {
+          open?.(false)
+          open = resolve
+          setAsking({ ...req, resolve })
+        }),
+    )
+    return () => {
+      off()
+      open?.(false)
+    }
+  }, [screenId])
+
+  const answer = (ok: boolean) => {
+    asking?.resolve(ok)
+    setAsking(null)
+  }
+
+  const approve = async () => {
+    if (!blade.approval || approving) return
+    setApproving(true)
+    const ok = await approveScreen(screenId, blade.approval)
+    setApproving(false)
+    if (ok) setApproved(true)
+    else setDismissed(true)
+  }
+
   if (!blade.url?.startsWith('/screen?')) return <p className="bl-note">That screen could not be shown.</p>
   return (
-    <iframe
-      ref={frame}
-      className="bl-frame"
-      src={withMediaKey(`${BRIDGE_HTTP_URL}${blade.url}`)}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      onLoad={post}
-      title={blade.title}
-    />
+    <div className="bl-screen">
+      <iframe
+        ref={frame}
+        className="bl-frame"
+        src={withMediaKey(`${BRIDGE_HTTP_URL}${blade.url}`)}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        onLoad={post}
+        title={blade.title}
+      />
+      {!approved && !dismissed && (
+        <div className="bl-gate" role="dialog" aria-label="Permissões da tela">
+          <b>Esta tela quer poder:</b>
+          <ul>
+            {declared.map((a) => (
+              <li key={a.name}>
+                {a.label ?? a.name}
+                {a.tier === 'confirm' ? <span className="bl-gate-tag">pede confirmação</span> : null}
+              </li>
+            ))}
+          </ul>
+          <div className="bl-gate-row">
+            <button type="button" className="bl-btn bl-gate-yes" onClick={approve} disabled={approving}>
+              Permitir
+            </button>
+            <button type="button" className="bl-btn" onClick={() => setDismissed(true)}>
+              Agora não
+            </button>
+          </div>
+        </div>
+      )}
+      {!approved && dismissed && (
+        <button type="button" className="bl-btn bl-gate-chip" onClick={() => setDismissed(false)}>
+          ações bloqueadas · permitir
+        </button>
+      )}
+      {asking && (
+        <div className="bl-gate" role="alertdialog" aria-label="Confirmar ação">
+          <b>{asking.title || 'A tela'} quer: {asking.label || asking.action}</b>
+          {describeArgs(asking.args) ? <p>{describeArgs(asking.args)}</p> : null}
+          <div className="bl-gate-row">
+            <button type="button" className="bl-btn bl-gate-yes" onClick={() => answer(true)}>
+              Permitir
+            </button>
+            <button type="button" className="bl-btn" onClick={() => answer(false)}>
+              Recusar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   )
 })
 

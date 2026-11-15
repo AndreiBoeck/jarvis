@@ -404,7 +404,22 @@ Kinds:
              URLs), no access to the interface. Its data arrives as
              window.JARVIS_DATA and a \`jarvis:data\` event on window. Style it
              yourself: dark, transparent background, cyan (#7fe8ff) on near-black
-             text, monospace, to match the interface.`
+             text, monospace, to match the interface.
+
+Screens that control things (app only):
+  An app screen can press buttons on the PC — play/pause, the volume, Spotify —
+  through the bridge, and nothing else. Declare on save the actions it may ask
+  for in \`actions\` (names from the list below; anything else is refused),
+  and call them from its script:
+      JARVIS.action('media.next').then(result => …).catch(err => …)
+  It returns a Promise; err.code says why a refusal happened ('not-approved',
+  'declined', 'not-declared', …). The first time the user opens a screen with
+  actions, the HUD asks them to approve it, and again after any change to its
+  html or actions — say so in one sentence when you save one. Use this when
+  the user asks for a screen that controls something; a built-in "player"
+  screen already exists for what is playing on the PC.
+  Available actions:
+%ACTIONS%`
 
 const screenSchema = {
   action: z.enum(['list', 'save', 'open', 'update', 'forget']).describe('What to do.'),
@@ -416,6 +431,11 @@ const screenSchema = {
     .catch(undefined)
     .describe('template (default) or app — see the description.'),
   html: z.string().optional().catch(undefined).describe('The screen itself, for save and update.'),
+  actions: z
+    .array(z.string())
+    .optional()
+    .catch(undefined)
+    .describe('app only: the device actions this screen may ask for, e.g. ["media.play_pause", "media.next"].'),
   data: z
     .record(z.string(), z.any())
     .optional()
@@ -472,8 +492,12 @@ const noCameraSchema = {
 export function displayServer(
   emit,
   emitBlade,
-  { camera = true, live = true, screens = screenStore(), cameraSource = null } = {},
+  { camera = true, live = true, screens = screenStore(), cameraSource = null, actions = null } = {},
 ) {
+  const screenDescription = SCREEN_DESCRIPTION.replace(
+    '%ACTIONS%',
+    actions?.list().length ? actions.catalogue() : '  (none on this bridge)',
+  )
   const newId = (p) => `${p}${Date.now().toString(36)}-${(seq++).toString(36)}`
   return createSdkMcpServer({
     name: 'jarvis',
@@ -634,7 +658,7 @@ export function displayServer(
         }
       }),
 
-      tool('screen', SCREEN_DESCRIPTION, screenSchema, async (args) => {
+      tool('screen', screenDescription, screenSchema, async (args) => {
         const ok = (text) => ({ content: [{ type: 'text', text }] })
         const name = String(args.name ?? '').trim()
 
@@ -654,6 +678,15 @@ export function displayServer(
                   // The revision busts any cached copy after an update.
                   url: `/screen?id=${encodeURIComponent(saved.id)}&rev=${encodeURIComponent(saved.updated)}`,
                   data: args.data ?? null,
+                  // What the user is asked to approve, worked out here — the
+                  // interface shows it and sends back the hash it showed.
+                  ...(saved.actions?.length
+                    ? {
+                        actions: actions ? actions.describe(saved.actions) : saved.actions.map((name) => ({ name })),
+                        approved: screens.isApproved(saved),
+                        approval: screens.hashOf(saved),
+                      }
+                    : {}),
                 }
               : { ...base, kind: 'markup', html: fillTemplate(saved.html, args.data ?? {}) }
           const placed = emitBlade(blade, args.screen ?? 'here')
@@ -677,8 +710,9 @@ export function displayServer(
                 all
                   .map(
                     (s) =>
-                      `- ${s.name} [${s.kind}]${s.description ? ` — ${s.description}` : ''}` +
-                      (s.fields?.length ? ` (fields: ${s.fields.join(', ')})` : ''),
+                      `- ${s.name} [${s.kind}${s.builtin ? ', built in' : ''}]${s.description ? ` — ${s.description}` : ''}` +
+                      (s.fields?.length ? ` (fields: ${s.fields.join(', ')})` : '') +
+                      (s.actions?.length ? ` (actions: ${s.actions.join(', ')})` : ''),
                   )
                   .join('\n'),
               )
@@ -689,10 +723,14 @@ export function displayServer(
                 description: args.description ?? '',
                 kind: args.kind ?? 'template',
                 html: args.html,
+                actions: args.actions,
               })
               const note =
                 `Saved screen "${entry.name}" (${entry.kind})` +
                 (entry.fields.length ? ` with fields: ${entry.fields.join(', ')}` : '') +
+                (entry.actions.length
+                  ? ` It may ask for: ${entry.actions.join(', ')} — the user approves that on the HUD the first time it opens.`
+                  : '') +
                 '.'
               if (args.data === undefined) return ok(note)
               const opened = open(screens.get(entry.id))
@@ -708,8 +746,14 @@ export function displayServer(
                 description: args.description,
                 kind: args.kind,
                 html: args.html,
+                actions: args.actions,
               })
-              return ok(`Updated screen "${entry.name}".`)
+              return ok(
+                `Updated screen "${entry.name}".` +
+                  (entry.actions?.length && entry.approval === null
+                    ? ' Its actions need the user’s approval again the next time it opens.'
+                    : ''),
+              )
             }
             case 'forget':
               return screens.forget(name)

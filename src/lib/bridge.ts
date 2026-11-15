@@ -82,6 +82,26 @@ export function sendLive(msg: Record<string, unknown>): boolean {
 }
 
 /**
+ * Saved screens' traffic (bridge/actions.mjs): answers to the actions a screen
+ * asked for, approvals, and the bridge asking the user to confirm one. Passed
+ * through untyped — src/lib/screens.ts owns the shape.
+ */
+let onScreenMsg: ((msg: Record<string, unknown>) => void) | null = null
+export function watchScreenMsgs(fn: (msg: Record<string, unknown>) => void) {
+  onScreenMsg = fn
+}
+let onScreenConfirm: ((req: Record<string, unknown>) => Promise<boolean>) | null = null
+export function watchScreenConfirm(fn: (req: Record<string, unknown>) => Promise<boolean>) {
+  onScreenConfirm = fn
+}
+/** Send one screen message, if the socket is up. False if it is not. */
+export function sendScreen(msg: Record<string, unknown>): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false
+  socket.send(JSON.stringify(msg))
+  return true
+}
+
+/**
  * A watch speaking up on its own — a condition the user asked to hear about
  * has come true. Nobody asked a question, so it arrives outside any turn.
  */
@@ -317,6 +337,19 @@ function dispatch(ws: WebSocket) {
       onCam?.(msg as unknown as Record<string, unknown>)
     } else if (msg.type === 'live' && msg.op) {
       onLive?.(msg as unknown as Record<string, unknown>)
+    } else if (msg.type === 'screen_action' || msg.type === 'screen_approved') {
+      onScreenMsg?.(msg as unknown as Record<string, unknown>)
+    } else if (msg.type === 'screen_confirm' && msg.id) {
+      const id = msg.id
+      // Always answered: the bridge holds the screen's action open until then.
+      const answer = (allow: boolean) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'reply', id, allow }))
+      }
+      if (!onScreenConfirm) answer(false)
+      else
+        onScreenConfirm(msg as unknown as Record<string, unknown>)
+          .then((allow) => answer(allow === true))
+          .catch(() => answer(false))
     } else if (msg.type === 'ui' && msg.op) {
       // A `ui` frame with no args is normal — reset and clear take none — so an
       // absent args object is an empty one, not a reason to drop the command.

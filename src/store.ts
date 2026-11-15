@@ -63,6 +63,12 @@ export type Blade = {
   source?: string
   /** camera: what that device is called, for the blade. */
   sourceLabel?: string
+  /** screen: the device actions it declared, in words (bridge/actions.mjs). */
+  actions?: Array<{ name: string; label?: string; tier?: string }>
+  /** screen: whether the user has approved those actions for it as it is now. */
+  approved?: boolean
+  /** screen: the hash an approval click sends back — what the card showed. */
+  approval?: string
   /** gallery. */
   images?: string[]
   /** markup — sanitised exactly as a panel body is. */
