@@ -4,7 +4,8 @@ import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { echoTuning } from './micProfile'
-import { busyAction, type VoiceMode } from './listenPolicy'
+import { busyAction, wakeAtStart, type VoiceMode } from './listenPolicy'
+import { QUICK_WAKE_MS, emitNow, readResults, wakeStep } from './interim'
 
 /**
  * The voice loop.
@@ -672,6 +673,22 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   let barged = false
   /** What is buffered began while he was busy: see actOnBusy. */
   let bufferedBusy = false
+  /** His name was heard in that busy speech and he has already been stopped. */
+  let busyStopped = false
+  /** His name was heard from standby and the words after it are awaited. */
+  let wakeHeld = false
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null
+  /** When a quiet gap first found only a guess to hand on: see emitNow. */
+  let graceFrom = 0
+  /**
+   * Results already handed on, by index in this recogniser session — so a
+   * final that lands after its guess was used is not a second sentence.
+   */
+  let consumedUpTo = -1
+  /** The highest result index seen in this session. */
+  let lastIndex = -1
+  /** The result his name was in when he answered to it alone: see readResults. */
+  let wakePrefixIndex = -1
   let lastWake = 0
   let lastAlive = Date.now()
   let silenceTimer: ReturnType<typeof setTimeout> | null = null
@@ -696,19 +713,55 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     silenceTimer = null
   }
 
+  const clearWakeTimer = () => {
+    if (wakeTimer) clearTimeout(wakeTimer)
+    wakeTimer = null
+  }
+
   const reset = () => {
     clearSilence()
+    clearWakeTimer()
     settled = ''
     interim = ''
     started = false
     barged = false
     bufferedBusy = false
+    busyStopped = false
+    wakeHeld = false
+    graceFrom = 0
+  }
+
+  /** Everything heard so far in this session is spoken for. */
+  const consume = () => {
+    consumedUpTo = Math.max(consumedUpTo, lastIndex)
+  }
+
+  /** Answer to his name from standby, with what followed it. */
+  const fireWake = (trailing: string) => {
+    lastWake = Date.now()
+    diag.wakes++
+    diag.dropped = ''
+    diag.accepted++
+    consume()
+    reset()
+    h.onWake(trailing)
   }
 
   const emit = () => {
+    // A guess is never handed on while its final may still come: give it the
+    // grace period, then use what there is.
+    if (interim.trim()) {
+      if (!graceFrom) graceFrom = Date.now()
+      if (!emitNow(true, Date.now() - graceFrom)) {
+        clearSilence()
+        silenceTimer = setTimeout(emit, 150)
+        return
+      }
+    }
     const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     const mode = h.mode()
     const busy = bufferedBusy
+    consume()
     reset()
     if (!text || mode === 'deaf') return
     if (isEcho(text, speakingNow())) {
@@ -755,13 +808,18 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       interim = ''
       return
     }
-    let fresh = ''
-    interim = ''
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const chunk = e.results[i][0].transcript as string
-      if (e.results[i].isFinal) fresh += chunk
-      else interim += chunk
-    }
+    const read = readResults(
+      Array.from(e.results as ArrayLike<any>, (r: any) => ({
+        transcript: String(r[0]?.transcript ?? ''),
+        isFinal: Boolean(r.isFinal),
+      })),
+      e.resultIndex,
+      consumedUpTo,
+      wakePrefixIndex >= 0 ? { index: wakePrefixIndex, fn: (t) => (WAKE.test(t) ? afterWake(t) : t) } : null,
+    )
+    lastIndex = Math.max(lastIndex, read.last)
+    const fresh = read.fresh
+    interim = read.interim
     const heard = `${settled}${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!heard) return
     if (isEcho(`${fresh} ${interim}`, speakingNow())) {
@@ -777,18 +835,45 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       bufferedBusy = true
       settled += fresh
       if (settled.length > 400) settled = settled.slice(-400)
+      // His name, even in a guess, stops him at once — stopping costs nothing.
+      // What he is asked waits for the final words: see actOnBusy via emit.
+      if (!busyStopped && wakeAtStart(heard) !== null) {
+        busyStopped = true
+        h.onSpeechStart()
+      }
       bumpSilence()
       return
     }
 
     if (mode === 'wake') {
       settled += fresh
-      if (WAKE.test(heard) && Date.now() - lastWake > WAKE_DEBOUNCE) {
-        lastWake = Date.now()
-        diag.wakes++
+      if (wakeHeld || (WAKE.test(heard) && Date.now() - lastWake > WAKE_DEBOUNCE)) {
+        if (!WAKE.test(heard)) return
         const trailing = afterWake(heard)
-        reset()
-        h.onWake(trailing)
+        const step = wakeStep(trailing, !interim.trim())
+        if (step.kind === 'fire') {
+          fireWake(trailing)
+          return
+        }
+        wakeHeld = true
+        clearWakeTimer()
+        if (step.kind === 'quick') {
+          // His name alone: answer now-ish rather than waiting on Chrome to
+          // finalise. If he goes on talking in the same breath, the rest of
+          // that result arrives as the command with the name taken off.
+          const at = lastIndex
+          wakeTimer = setTimeout(() => {
+            wakePrefixIndex = at
+            lastWake = Date.now()
+            diag.wakes++
+            diag.dropped = ''
+            diag.accepted++
+            reset()
+            h.onWake('')
+          }, QUICK_WAKE_MS)
+        }
+        // Chrome sometimes never finalises: the quiet gap hands it on anyway.
+        bumpSilence()
       } else if (settled.length > 400) {
         settled = ''
       }
@@ -833,6 +918,10 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
 
   const spin = () => {
     if (stopped || running) return
+    // Result indices start again with every session.
+    consumedUpTo = -1
+    lastIndex = -1
+    wakePrefixIndex = -1
     rec = new Ctor()
     rec.continuous = true
     rec.interimResults = true
