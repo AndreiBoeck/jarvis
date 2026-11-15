@@ -265,3 +265,11 @@ test('banner and blade texts', () => {
   assert.equal(minutesLeft(61_000, 0), 2)
   assert.equal(minutesLeft(1000, 5000), 0, "past due reads 0")
 })
+
+test('with the camera switched off, the blade tool says nothing about cameras', async () => {
+  const { displayServer } = await import('../bridge/panels.mjs')
+  const tools = (on) => displayServer(() => {}, () => ({}), { camera: on }).instance._registeredTools
+  const off = tools(false).blade
+  assert.doesNotMatch(off.description, /camera|`source`/i)
+  assert.match(tools(true).blade.description, /`source` picks WHOSE camera/)
+})

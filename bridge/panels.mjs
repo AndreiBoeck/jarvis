@@ -475,7 +475,7 @@ argument. You know those things. Overrule it whenever you have reason to.`
  * very camera the user switched off.
  */
 const CAMERA_BLADE =
-  /  camera  — the live view from the user's camera[\s\S]*?Needs no url\.\n/
+  /  camera  — the live view from the user's camera[\s\S]*?over there, and they can cut it\.\n/
 const NO_CAMERA_DESCRIPTION = BLADE_DESCRIPTION.replace(CAMERA_BLADE, '')
 const { source: _source, ...withoutSource } = bladeSchema
 const noCameraSchema = {
