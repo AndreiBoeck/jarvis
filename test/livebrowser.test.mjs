@@ -9,6 +9,7 @@ import {
   browserCandidates,
   findBrowser,
   keyEventParams,
+  virtualKey,
   liveUrlProblem,
   viewportFor,
 } from '../bridge/livebrowser.mjs'
@@ -55,6 +56,17 @@ test('keys: a printable key types, a command key does not, Enter submits', () =>
   assert.equal(keyEventParams({ event: 'down', key: 'A', mods: 8 }).text, 'A', 'shift still types')
   assert.equal(keyEventParams({ event: 'down', key: 'Enter', keyCode: 13 }).text, '\r')
   assert.equal(keyEventParams({ event: 'up', key: 'a' }).type, 'keyUp')
+})
+
+test('a missing or phone-keyboard key code is filled in, so Enter submits', () => {
+  assert.equal(virtualKey('Enter', 0), 13)
+  assert.equal(virtualKey('Enter', 229), 13, 'Android IMEs report 229')
+  assert.equal(virtualKey('a', 0), 65)
+  assert.equal(virtualKey('7', undefined), 55)
+  assert.equal(virtualKey('ArrowDown', 0), 40)
+  assert.equal(virtualKey('é', 0), 0)
+  assert.equal(virtualKey('a', 65), 65, 'a real code is kept')
+  assert.equal(keyEventParams({ event: 'down', key: 'Enter' }).windowsVirtualKeyCode, 13)
 })
 
 test('a blade size becomes a sane viewport', () => {

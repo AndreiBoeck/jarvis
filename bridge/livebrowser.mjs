@@ -132,9 +132,27 @@ const mods = (m) => Number(m) & 15
  * that types nothing (arrows, Backspace, a Ctrl shortcut) is a rawKeyDown.
  * Enter carries "\r" so it submits a form, as a real keyboard does.
  */
+const VK = {
+  Backspace: 8, Tab: 9, Enter: 13, Escape: 27, ' ': 32, PageUp: 33, PageDown: 34, End: 35, Home: 36,
+  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46,
+}
+
+/**
+ * The Windows virtual key code a page's handlers test (`e.keyCode === 13`).
+ * A phone's keyboard reports 229 for everything and a synthetic event reports
+ * 0; without a real code, Enter types a newline but submits nothing.
+ */
+export function virtualKey(key, keyCode) {
+  const given = Number(keyCode) || 0
+  if (given && given !== 229) return given
+  if (Object.hasOwn(VK, key)) return VK[key]
+  if (/^[a-z0-9]$/i.test(key)) return key.toUpperCase().charCodeAt(0)
+  return 0
+}
+
 export function keyEventParams({ event, key = '', code = '', keyCode = 0, mods: m = 0 }) {
   const modifiers = mods(m)
-  const base = { key, code, windowsVirtualKeyCode: Number(keyCode) || 0, modifiers }
+  const base = { key, code, windowsVirtualKeyCode: virtualKey(key, keyCode), modifiers }
   if (event === 'up') return { type: 'keyUp', ...base }
   const commandHeld = (modifiers & 2) || (modifiers & 4)
   const text = key === 'Enter' ? '\r' : key.length === 1 && !commandHeld ? key : ''
@@ -321,11 +339,24 @@ export class LiveBrowser {
       case 'Page.frameNavigated':
         if (tab && !p.frame?.parentId) this.onNavigated(tab, p.frame.url)
         break
+      // A web app moving between its own views (history.pushState): no load,
+      // but the address and the back button change.
+      case 'Page.navigatedWithinDocument':
+        if (tab && p.frameId === tab.targetId) void this.pushState(tab, { url: p.url })
+        break
+      // Whichever comes first: a web app that streams forever may never fire
+      // `load`, but its own frame does stop loading and its DOM is ready.
       case 'Page.loadEventFired':
+      case 'Page.domContentEventFired':
         if (tab) void this.pushState(tab, { loading: false })
         break
+      case 'Page.frameStoppedLoading':
+        if (tab && p.frameId === tab.targetId) void this.pushState(tab, { loading: false })
+        break
       case 'Page.frameStartedLoading':
-        if (tab) tab.owner?.send({ type: 'live', op: 'state', id: tab.id, loading: true })
+        // The page's own frame only (its id is the target's): a web app keeps
+        // loading iframes long after it has loaded, and the bar would spin forever.
+        if (tab && p.frameId === tab.targetId) tab.owner?.send({ type: 'live', op: 'state', id: tab.id, loading: true })
         break
       case 'Page.javascriptDialogOpening':
         // Nobody is at the PC to answer it, and an open dialog freezes the page.
@@ -467,7 +498,9 @@ export class LiveBrowser {
     await this.setViewport(tab, viewportFor({ w, h, mobile }))
     await this.cast(tab, true)
     await this.call('Page.navigate', { url }, sessionId)
-    void this.pushState(tab, { loading: true })
+    // No `loading` here: frameStartedLoading and loadEventFired say that, and
+    // this reply can land after the load event and leave the bar spinning.
+    void this.pushState(tab)
   }
 
   async setViewport(tab, vp) {
@@ -581,6 +614,9 @@ export class LiveBrowser {
       owner.send({ type: 'live', op: 'error', id, message: String(err?.message ?? err) })
     try {
       if (msg.op === 'open') return await this.open(owner, { ...msg, id })
+      // The blade resizes (or is clicked) while its tab is still opening: wait
+      // for it, rather than telling the blade its tab is gone.
+      if (!this.tabs.has(id) && this.opening.has(id)) await this.opening.get(id).catch(() => {})
       const tab = this.tabs.get(id)
       if (!tab) {
         if (msg.op !== 'close' && msg.op !== 'pause') owner.send({ type: 'live', op: 'closed', id })

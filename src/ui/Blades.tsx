@@ -262,7 +262,7 @@ const LiveView = memo(function LiveView({ blade }: { blade: Blade }) {
         frameSize.current = { w: m.w ?? 0, h: m.h ?? 0 }
         if (!started.current) {
           started.current = true
-          setSt((s) => ({ ...s, started: true }))
+          setSt((s) => ({ ...s, started: true, closed: false }))
         }
         return
       }
