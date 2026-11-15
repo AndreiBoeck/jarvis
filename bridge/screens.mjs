@@ -95,14 +95,22 @@ export function templateFields(html) {
  * postMessage into a `jarvis:data` event and keeps the last value on
  * window.JARVIS_DATA, so a screen can read it whichever arrives first.
  */
+/**
+ * Dark, declared. The blade's iframe is color-scheme: dark; a document that
+ * does not say the same gets an opaque white backdrop painted behind it by the
+ * browser, so a screen written with a transparent background turns up white.
+ */
+const APP_SCHEME = '<meta name="color-scheme" content="dark"><style>:root{color-scheme:dark}</style>'
+
 const APP_SHIM = `<script>(function(){window.JARVIS_DATA=window.JARVIS_DATA||null;addEventListener('message',function(e){var m=e.data;if(!m||m.jarvis!=='data')return;window.JARVIS_DATA=m.data;dispatchEvent(new CustomEvent('jarvis:data',{detail:m.data}))});})();</script>`
 
 /** An app screen as served: shim first, so it is listening before the screen's own code runs. */
 export function appDocument(html) {
   const src = String(html)
   const head = /<head[^>]*>/i.exec(src)
-  if (head) return src.slice(0, head.index + head[0].length) + APP_SHIM + src.slice(head.index + head[0].length)
-  return `<!doctype html><html><head><meta charset="utf-8">${APP_SHIM}</head><body>${src}</body></html>`
+  const top = APP_SCHEME + APP_SHIM
+  if (head) return src.slice(0, head.index + head[0].length) + top + src.slice(head.index + head[0].length)
+  return `<!doctype html><html><head><meta charset="utf-8">${top}</head><body>${src}</body></html>`
 }
 
 /**

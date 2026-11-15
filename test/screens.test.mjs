@@ -107,6 +107,8 @@ test('an app screen: the data shim runs first, and the CSP lets nothing leave', 
   const doc = appDocument('<html><head><title>t</title></head><body><script>go()</script></body></html>')
   assert.ok(doc.indexOf("m.jarvis!=='data'") < doc.indexOf('go()'), 'shim before the screen code')
   assert.match(appDocument('<p>bare</p>'), /^<!doctype html>.*JARVIS_DATA.*<p>bare<\/p>/s)
+  // A transparent screen must not be painted white behind (iframe is dark).
+  assert.match(doc, /<meta name="color-scheme" content="dark">/)
   for (const rule of ["default-src 'none'", "connect-src 'none'", "frame-src 'none'", "form-action 'none'"]) {
     assert.ok(APP_CSP.includes(rule), rule)
   }
