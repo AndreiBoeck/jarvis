@@ -119,6 +119,11 @@ export function screenLabel(s, home = 'PC') {
 
 export const hostLabel = (home = 'PC') => `${home} — no JARVIS screen open there`
 
+const minutes = (ms) => {
+  const n = Math.round(ms / 60_000)
+  return `${n} minute${n === 1 ? '' : 's'}`
+}
+
 /**
  * The exchange. `hostCamera` is a HostCamera (or anything with its shape);
  * `now` is injectable for the expiry tests.
@@ -258,7 +263,7 @@ export class CamHub {
       g.viewerId = screen.id
     }
     if (g.source === 'host' && this.now() >= this.hostUntil) {
-      return refuse(`Stopped: the ${this.home}'s camera turns itself off after ${Math.round(this.hostMs / 60_000)} minutes. Ask JARVIS again to keep watching.`)
+      return refuse(`Stopped: the ${this.home}'s camera turns itself off after ${minutes(this.hostMs)}. Ask JARVIS again to keep watching.`)
     }
     let feed = this.feeds.get(g.source)
     if (!feed) {
@@ -442,7 +447,7 @@ export class CamHub {
   checkExpiry() {
     const feed = this.feeds.get('host')
     if (feed && this.now() >= this.hostUntil) {
-      this.endFeed(feed, `Stopped: the ${this.home}'s camera turns itself off after ${Math.round(this.hostMs / 60_000)} minutes unless asked again.`)
+      this.endFeed(feed, `Stopped: the ${this.home}'s camera turns itself off after ${minutes(this.hostMs)} unless asked again.`)
     }
   }
 

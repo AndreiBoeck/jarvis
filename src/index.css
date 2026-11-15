@@ -2171,6 +2171,7 @@ kbd {
 /* Another device's camera on a blade (bridge/camfeed.mjs). Not mirrored. */
 .bl-camremote {
   position: relative;
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -2258,6 +2259,8 @@ kbd {
   background: rgba(190, 20, 20, 0.92);
   border: 1px solid #ff6b6b;
   box-shadow: 0 0 18px rgba(255, 60, 60, 0.55);
+  /* The HUD layer is pointer-events: none; a Cut button that cannot be pressed is no off switch. */
+  pointer-events: auto;
 }
 .cam-out::before {
   content: '';

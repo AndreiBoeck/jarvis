@@ -300,6 +300,8 @@ Read from the shell, and from `.env.local` for anything the shell does not set.
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
 | `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `phone`, `mac`, `watch` |
+| `JARVIS_CAMERA_DEVICE` | the default webcam | Which webcam the bridge captures when no interface is open on its machine: any part of the camera's name (e.g. `C920`, `Integrated`) or its deviceId |
+| `JARVIS_CAMERA_HOST_MINUTES` | `10` | How long that capture runs before turning itself off unless asked again |
 | `JARVIS_CALL_TO` | none | Your own number, e.g. `+5511…`, for "call me" and calling watches |
 | `JARVIS_USER_NAME` | none | Who JARVIS says he is calling on behalf of |
 | `JARVIS_CALL_INTRO` | `Hello, I'm Friday, {name}'s AI assistant, calling on his behalf.` | How a call to someone else opens |
@@ -572,3 +574,30 @@ MIT.
 The boot sound and any tracks in `public/audio/` ship with the project for the
 demo. If you go on to monetise something built on this, clearing the rights to
 that audio is your responsibility.
+
+## Cameras across devices
+
+Any screen connected to the bridge can show another's camera on a blade:
+"show me the PC's camera" on the phone, "show me the phone's camera" on the PC
+(`blade` kind `camera` with `source`), and `look` / `watch` take a `device`.
+Frames are JPEGs over each screen's own authenticated socket, pulled one at a
+time as the viewer draws them, so a slow link lowers the frame rate (up to ~10
+fps) and size (320–960 px) instead of building a backlog. Nothing is saved.
+
+- **Only on request.** A feed exists only for a blade the model opened; a
+  screen cannot start watching another device's camera on its own.
+- **The source knows.** The device being watched shows a red banner naming who
+  is watching, with a CUT button. "Cut the camera" (`camera_off`) stops every
+  feed. Closing the last blade on it stops the camera.
+- **The PC with no interface open.** The bridge captures the webcam itself
+  through the Chrome/Edge already installed (headless, profile
+  `~/.jarvis/host-camera`, no ffmpeg). The viewers are told nobody can see a
+  banner over there; the webcam light is the only sign on the PC, and the
+  capture stops itself after `JARVIS_CAMERA_HOST_MINUTES` unless asked again.
+  If the PC interface is open, it sends its own camera instead. On Windows a
+  webcam usually belongs to one application at a time, so this also avoids a
+  second capture fighting the interface for it.
+- **Windows.** Windows Settings → Privacy → Camera must allow desktop apps.
+  If the wrong webcam is picked, set `JARVIS_CAMERA_DEVICE` to part of its
+  name, as Chrome/Edge lists it.
+- `JARVIS_DISABLE=camera` turns all of it off, the bridge's own capture included.
