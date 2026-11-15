@@ -83,7 +83,7 @@ export const BUILTIN_SCREENS = [
     id: 'player',
     name: 'Player',
     description: 'What is playing on the PC, with its cover and play/pause, next and previous buttons.',
-    actions: ['media.now_playing', 'media.play_pause', 'media.next', 'media.previous'],
+    actions: ['media.now_playing', 'media.play_pause', 'media.next', 'media.previous', 'system.volume'],
   },
 ]
 

@@ -161,6 +161,12 @@ export const DEVICE_ACTIONS = Object.freeze({
   'media.play_pause': 'safe',
   'media.next': 'safe',
   'media.previous': 'safe',
+  'system.volume': 'safe',
+  'system.lock': 'safe',
+  'system.display_off': 'safe',
+  'system.open_app': 'confirm',
+  'system.open_url': 'confirm',
+  'system.sleep': 'confirm',
 })
 
 /** The MCP servers built from DEVICE_ACTIONS, and which prefix each carries. */

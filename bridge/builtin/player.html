@@ -69,6 +69,11 @@
   button:active { background: rgba(127, 232, 255, 0.24) }
   button.main { width: 58px; border-color: rgba(127, 232, 255, 0.45) }
   button svg { width: 18px; height: 18px; fill: currentColor }
+  .vol { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 10px; color: var(--dim) }
+  .vol button { width: 30px; height: 24px }
+  .vol button svg { width: 14px; height: 14px }
+  .vol input { flex: 1; max-width: 220px; accent-color: var(--c) }
+  .vol.muted input { opacity: 0.35 }
   .note { min-height: 1.4em; font-size: 11px; color: var(--dim) }
   .note.err { color: #ffb4a8 }
   @media (max-width: 420px) {
@@ -94,6 +99,11 @@
       <button id="prev" title="Anterior" aria-label="Anterior"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
       <button id="toggle" class="main" title="Tocar/pausar" aria-label="Tocar/pausar"><svg viewBox="0 0 24 24" id="toggleIcon"><path d="M8 5v14l11-7z"/></svg></button>
       <button id="next" title="Próxima" aria-label="Próxima"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+    </div>
+    <div class="vol" id="vol" hidden>
+      <button id="mute" title="Mudo" aria-label="Mudo"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path id="muteWave" d="M16 8.5a5 5 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+      <input type="range" id="level" min="0" max="100" step="1" aria-label="Volume do PC">
+      <span id="levelText">–</span>
     </div>
     <div class="note" id="note"></div>
   </div>
@@ -183,6 +193,36 @@
     }).catch(function (err) { note(why(err), true) }).then(function () { busy = false })
   }
 
+  // The PC's volume: read every few seconds, set as the slider moves.
+  var vol = null, dragging = false, volTimer = null
+  function paintVol() {
+    if (!vol) return
+    $('vol').hidden = false
+    if (!dragging) $('level').value = vol.level
+    $('levelText').textContent = vol.muted ? 'mudo' : vol.level + '%'
+    $('vol').className = 'vol' + (vol.muted ? ' muted' : '')
+    $('muteWave').style.display = vol.muted ? 'none' : ''
+  }
+  function readVol() {
+    return JARVIS.action('system.volume').then(function (v) { vol = v; paintVol() }).catch(function () {})
+  }
+  $('level').oninput = function () {
+    dragging = true
+    $('levelText').textContent = $('level').value + '%'
+    clearTimeout(volTimer)
+    volTimer = setTimeout(function () {
+      JARVIS.action('system.volume', { level: Number($('level').value) })
+        .then(function (v) { vol = v; dragging = false; paintVol() })
+        .catch(function (err) { dragging = false; note(why(err), true) })
+    }, 180)
+  }
+  $('mute').onclick = function () {
+    JARVIS.action('system.volume', { mute: !(vol && vol.muted) })
+      .then(function (v) { vol = v; paintVol() })
+      .catch(function (err) { note(why(err), true) })
+  }
+  var volCount = 0
+
   $('prev').onclick = function () { press('media.previous') }
   $('next').onclick = function () { press('media.next') }
   $('toggle').onclick = function () {
@@ -194,7 +234,9 @@
   function loop() {
     clearTimeout(timer)
     if (document.visibilityState === 'hidden') { timer = setTimeout(loop, 4000); return }
-    refresh().then(function () { timer = setTimeout(loop, 2000) })
+    var work = [refresh()]
+    if (volCount++ % 2 === 0 && !dragging) work.push(readVol())
+    Promise.all(work).then(function () { timer = setTimeout(loop, 2000) })
   }
   setInterval(paint, 500)
   document.addEventListener('visibilitychange', loop)

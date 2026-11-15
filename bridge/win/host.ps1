@@ -38,6 +38,49 @@ $PropsType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMed
 
 Add-Type -Namespace Jarvis -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, System.UIntPtr extra);
+[DllImport("user32.dll")] public static extern bool LockWorkStation();
+[DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr hWnd, uint msg, System.IntPtr w, System.IntPtr l);
+'@
+
+# The default output device's volume, through Core Audio. The interfaces are
+# declared in vtable order; the unnamed methods are the ones not called.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Jarvis {
+  [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IAudioEndpointVolume {
+    int f(); int g(); int h(); int i();
+    int SetMasterVolumeLevelScalar(float level, Guid ctx);
+    int j();
+    int GetMasterVolumeLevelScalar(out float level);
+    int k(); int l(); int m(); int n();
+    int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, Guid ctx);
+    int GetMute(out bool mute);
+  }
+  [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDevice { int Activate(ref Guid id, int ctx, IntPtr p, out IAudioEndpointVolume v); }
+  [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDeviceEnumerator { int f(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice d); }
+  [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
+  public static class Audio {
+    static IAudioEndpointVolume Vol() {
+      var e = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
+      IMMDevice d; Marshal.ThrowExceptionForHR(e.GetDefaultAudioEndpoint(0, 1, out d));
+      IAudioEndpointVolume v; var id = typeof(IAudioEndpointVolume).GUID;
+      Marshal.ThrowExceptionForHR(d.Activate(ref id, 23, IntPtr.Zero, out v));
+      return v;
+    }
+    public static float Level {
+      get { float x; Marshal.ThrowExceptionForHR(Vol().GetMasterVolumeLevelScalar(out x)); return x; }
+      set { Marshal.ThrowExceptionForHR(Vol().SetMasterVolumeLevelScalar(value, Guid.Empty)); }
+    }
+    public static bool Muted {
+      get { bool x; Marshal.ThrowExceptionForHR(Vol().GetMute(out x)); return x; }
+      set { Marshal.ThrowExceptionForHR(Vol().SetMute(value, Guid.Empty)); }
+    }
+  }
+}
 '@
 
 function Tap([byte]$vk) {
@@ -151,11 +194,45 @@ function Media([string]$op, [string]$app) {
   [ordered]@{ ok = [bool]$ok; via = 'smtc'; appId = $s.SourceAppUserModelId }
 }
 
+function Volume($req) {
+  if ($null -ne $req.level) { [Jarvis.Audio]::Level = [float]([math]::Max(0, [math]::Min(100, [double]$req.level)) / 100) }
+  if ($null -ne $req.mute) { [Jarvis.Audio]::Muted = [bool]$req.mute }
+  [ordered]@{ level = [int][math]::Round([Jarvis.Audio]::Level * 100); muted = [Jarvis.Audio]::Muted }
+}
+
+# An app from the Start menu, by name: exact, then starts-with, then contains.
+function OpenApp([string]$name) {
+  $apps = @(Get-StartApps)
+  $hit = $apps | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+  if (-not $hit) { $hit = $apps | Where-Object { $_.Name -like "$name*" } | Select-Object -First 1 }
+  if (-not $hit) { $hit = $apps | Where-Object { $_.Name -like "*$name*" } | Select-Object -First 1 }
+  if (-not $hit) { throw "No app called $name in the Start menu" }
+  Start-Process "shell:AppsFolder\$($hit.AppID)"
+  [ordered]@{ opened = $hit.Name }
+}
+
 function Dispatch($req) {
   switch ([string]$req.op) {
     'ping' { return [ordered]@{ ok = $true; ps = "$($PSVersionTable.PSVersion)" } }
     'now_playing' { return (Info (Pick ([string]$req.app)) ([bool]$req.art)) }
     'sessions' { return , (Sessions) }
+    'volume' { return (Volume $req) }
+    'lock' { $null = [Jarvis.Native]::LockWorkStation(); return [ordered]@{ ok = $true } }
+    # WM_SYSCOMMAND / SC_MONITORPOWER / off, to every window. Posted, not sent:
+    # a broadcast SendMessage waits on every hung window on the desktop.
+    'display_off' { $null = [Jarvis.Native]::PostMessage([IntPtr]0xFFFF, 0x0112, [IntPtr]0xF170, [IntPtr]2); return [ordered]@{ ok = $true } }
+    'sleep' {
+      Add-Type -AssemblyName System.Windows.Forms
+      $null = [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)
+      return [ordered]@{ ok = $true }
+    }
+    'open_app' { return (OpenApp ([string]$req.app)) }
+    'open_url' {
+      $u = [string]$req.url
+      if ($u -notmatch '^https?://') { throw 'Only http and https links' }
+      Start-Process $u
+      return [ordered]@{ opened = $u }
+    }
     { $MediaKeys.ContainsKey($_) } { return (Media ([string]$req.op) ([string]$req.app)) }
   }
   throw "unknown op: $($req.op)"

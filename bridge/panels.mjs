@@ -415,7 +415,9 @@ Screens that control things (app only):
   It returns a Promise; err.code says why a refusal happened ('not-approved',
   'declined', 'not-declared', …). The first time the user opens a screen with
   actions, the HUD asks them to approve it, and again after any change to its
-  html or actions — say so in one sentence when you save one. Use this when
+  html or actions — say so in one sentence when you save one. A screen's
+  buttons work even when your own tools are read-only: the user's approval and,
+  for actions marked below, a click on "Permitir" each time are the gate. Use this when
   the user asks for a screen that controls something; a built-in "player"
   screen already exists for what is playing on the PC.
   Available actions:
