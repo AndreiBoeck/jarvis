@@ -551,7 +551,8 @@ export default function App() {
             ? req.reason || 'reviewing the last few seconds'
             : `${req.reason || 'watching'} · ${req.seconds}s`
           : req.reason || 'taking a look'
-      store.getState().setLooking(note)
+      // Another device looking through this one: say which, on this screen.
+      store.getState().setLooking(req.from ? `${req.from} · ${note}` : note)
 
       // The past is only available if something has been remembering it, and
       // that only happens while the camera is on screen. Answering plainly

@@ -45,6 +45,7 @@ type Frame = {
   mode?: string
   seconds?: number
   when?: string
+  from?: string
   servers?: Array<string | { name?: string }>
   alert?: WatchAlert
 }
@@ -58,6 +59,21 @@ let onLive: ((msg: Record<string, unknown>) => void) | null = null
 export function watchLive(fn: (msg: Record<string, unknown>) => void) {
   onLive = fn
 }
+/**
+ * Cameras across devices (bridge/camfeed.mjs): this screen as a viewer of
+ * another device's camera, and as a source others are watching. Untyped here;
+ * src/lib/camfeed.ts owns the shape.
+ */
+let onCam: ((msg: Record<string, unknown>) => void) | null = null
+export function watchCam(fn: (msg: Record<string, unknown>) => void) {
+  onCam = fn
+}
+export function sendCam(msg: Record<string, unknown>): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false
+  socket.send(JSON.stringify({ ...msg, type: 'cam' }))
+  return true
+}
+
 /** Send one live-browser message, if the socket is up. False if it is not. */
 export function sendLive(msg: Record<string, unknown>): boolean {
   if (socket?.readyState !== WebSocket.OPEN) return false
@@ -123,6 +139,8 @@ export type CaptureRequest = {
   seconds: number
   /** 'now' records forward; 'past' reads the rolling buffer. */
   when: 'now' | 'past'
+  /** Set when another device is looking through this one's camera. */
+  from?: string
 }
 export type CaptureResult = { data?: string; mimeType?: string; error?: string }
 
@@ -264,6 +282,7 @@ function dispatch(ws: WebSocket) {
       if (!liveClaimed) {
         liveClaimed = true
         onLive?.({ op: 'ready' })
+        onCam?.({ op: 'ready' })
       }
     } else if (msg.type === 'panel' && msg.panel) {
       onPanel?.(msg.panel)
@@ -289,10 +308,13 @@ function dispatch(ws: WebSocket) {
           reason: msg.reason ?? '',
           seconds: Math.max(2, Math.min(15, Number(msg.seconds) || 6)),
           when: msg.when === 'past' ? 'past' : 'now',
+          ...(typeof msg.from === 'string' && msg.from ? { from: msg.from.slice(0, 60) } : {}),
         })
           .then(reply)
           .catch((err) => reply({ error: String(err?.message ?? err) }))
       }
+    } else if (msg.type === 'cam' && msg.op) {
+      onCam?.(msg as unknown as Record<string, unknown>)
     } else if (msg.type === 'live' && msg.op) {
       onLive?.(msg as unknown as Record<string, unknown>)
     } else if (msg.type === 'ui' && msg.op) {

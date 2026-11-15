@@ -2166,3 +2166,116 @@ kbd {
   cursor: pointer;
   pointer-events: auto;
 }
+
+/* ======================================================= cameras across devices */
+/* Another device's camera on a blade (bridge/camfeed.mjs). Not mirrored. */
+.bl-camremote {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.bl-camremote-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.bl-camremote-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.bl-camremote-dot[data-live] {
+  background: #ff4d4d;
+  box-shadow: 0 0 8px #ff4d4d;
+  animation: handsPulse 1.6s ease-in-out infinite;
+}
+.bl-camremote-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bl-camremote-left {
+  opacity: 0.6;
+  white-space: nowrap;
+}
+.bl-camremote-img {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+}
+.bl-camremote-wait {
+  position: absolute;
+  inset: 40% 0 auto;
+  text-align: center;
+}
+.bl-camremote-ended {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.bl-camremote-retry,
+.cam-out-cut {
+  font: inherit;
+  letter-spacing: 0.18em;
+  padding: 6px 14px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  cursor: pointer;
+}
+
+/* This device's camera being watched from another. Red, fixed, always on top. */
+.cam-out {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 6px 8px 6px 12px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: #fff;
+  background: rgba(190, 20, 20, 0.92);
+  border: 1px solid #ff6b6b;
+  box-shadow: 0 0 18px rgba(255, 60, 60, 0.55);
+}
+.cam-out::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  animation: handsPulse 1.2s ease-in-out infinite;
+}
+.cam-out-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cam-out-cut {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-weight: 700;
+}

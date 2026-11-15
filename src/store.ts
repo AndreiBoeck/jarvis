@@ -59,6 +59,10 @@ export type Blade = {
   url?: string
   /** screen: the values handed to it by postMessage. */
   data?: unknown
+  /** camera: another device's camera ('screen:<n>' | 'host'), granted by the bridge. Absent = this device's own. */
+  source?: string
+  /** camera: what that device is called, for the blade. */
+  sourceLabel?: string
   /** gallery. */
   images?: string[]
   /** markup — sanitised exactly as a panel body is. */
@@ -248,6 +252,8 @@ type State = {
   /** Set while JARVIS is taking a look, to whatever he said he was looking for.
    *  null when he is not. The camera light is on either way — this says why. */
   looking: string | null
+  /** This device's camera being watched from others: who, per feed. Empty when it is not. */
+  camOut: Record<string, string[]>
   /** Transient status line during boot, e.g. the voice model download. */
   bootNote: string
   /** Cards currently on the display, newest last. */
@@ -265,6 +271,7 @@ type State = {
   setGestures: (on: boolean) => void
   setMuted: (on: boolean) => void
   setLooking: (why: string | null) => void
+  setCamOut: (feed: string, to: string[] | null) => void
   setBootNote: (n: string) => void
   pushPanel: (p: Panel) => void
   clearPanels: () => void
@@ -303,6 +310,7 @@ export const useStore = create<State>((set) => ({
   gestures: false,
   muted: false,
   looking: null,
+  camOut: {},
   panels: [],
   blades: [],
   focusedBlade: null,
@@ -314,6 +322,13 @@ export const useStore = create<State>((set) => ({
   setGestures: (gestures) => set({ gestures }),
   setMuted: (muted) => set({ muted }),
   setLooking: (looking) => set({ looking }),
+  setCamOut: (feed, to) =>
+    set((s) => {
+      const camOut = { ...s.camOut }
+      if (to) camOut[feed] = to
+      else delete camOut[feed]
+      return { camOut }
+    }),
   setBootNote: (bootNote) => set({ bootNote }),
   // Three is as many as fits around the reactor without crowding it. Sticky
   // panels are exempt from the cull — the tool description promises they stay

@@ -193,6 +193,20 @@ export function grabFrame(): { data: string; mimeType: string } {
   return toJpeg(canvas)
 }
 
+/**
+ * One frame for another device to watch: scaled down to `maxW` wide and
+ * compressed harder than a look, because it is one of many crossing a tailnet.
+ */
+export function grabScaled(maxW: number, q: number): { data: string; w: number; h: number } {
+  if (!video?.videoWidth) throw new Error('the camera is not ready')
+  const scale = Math.min(1, maxW / video.videoWidth)
+  const w = Math.round(video.videoWidth * scale)
+  const h = Math.round(video.videoHeight * scale)
+  const canvas = document.createElement('canvas')
+  if (!drawTo(canvas, w, h)) throw new Error('could not read the camera frame')
+  return { data: toJpeg(canvas, q).data, w, h }
+}
+
 /* -------------------------------------------------------------------- buffer */
 
 type Shot = { at: number; bitmap: HTMLCanvasElement }

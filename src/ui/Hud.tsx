@@ -6,6 +6,8 @@ import { BladeSweep, Blades } from './Blades'
 import { Effects } from './Effects'
 import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
+import { cutCamera } from '../lib/camfeed'
+import { watchersText } from '../lib/camStatus'
 
 const statusText: Record<Phase, string> = {
   offline: 'OFFLINE',
@@ -158,6 +160,8 @@ export function Hud({ onToggleMute }: { onToggleMute?: () => void } = {}) {
   const bootNote = useStore((s) => s.bootNote)
   const gestures = useStore((s) => s.gestures)
   const looking = useStore((s) => s.looking)
+  const camOut = useStore((s) => s.camOut)
+  const watchers = watchersText(camOut)
   const muted = useStore((s) => s.muted)
   const ui = useStore((s) => s.ui)
 
@@ -345,6 +349,17 @@ export function Hud({ onToggleMute }: { onToggleMute?: () => void } = {}) {
       {(gestures || looking) && (
         <div className="hands-live">
           {looking ? `LOOKING — ${looking.toUpperCase()}` : 'CAMERA ON · G TO STOP'}
+        </div>
+      )}
+      {/* This device's camera, watched from another. Visible for as long as it
+          is, and the button ends it from here. Above everything but the
+          reticle: a privacy control that can be covered is not one. */}
+      {watchers && (
+        <div className="cam-out" role="status">
+          <span className="cam-out-text">CAMERA LIVE TO {watchers}</span>
+          <button type="button" className="cam-out-cut" onClick={cutCamera}>
+            CUT
+          </button>
         </div>
       )}
       <GestureGuide live={gestures} />

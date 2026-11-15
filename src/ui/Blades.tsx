@@ -6,6 +6,8 @@ import { sanitisePanelHtml } from './sanitise'
 import { frameSpan, peaceScroll, pinchCount } from '../lib/hands'
 import * as camera from '../lib/camera'
 import { sendLive, subscribeLive } from '../lib/live'
+import { sendCam, subscribeCam } from '../lib/camfeed'
+import { minutesLeft } from '../lib/camStatus'
 import { addressToUrl, modsOf, toPage, touchKind, wheelPixels } from '../lib/livePointer'
 
 /**
@@ -178,6 +180,89 @@ const CameraView = memo(function CameraView() {
 
   if (failed) return <p className="bl-note">{failed}</p>
   return <video ref={el} className="bl-camera" autoPlay playsInline muted />
+})
+
+/**
+ * Another device's camera, on this screen (bridge/camfeed.mjs).
+ *
+ * Claims the grant the bridge made when the blade was opened, draws each JPEG
+ * as it comes, and acks it once it has been decoded — the ack is what lets the
+ * bridge ask for the next one. Not mirrored: it is not a reflection of whoever
+ * is looking at it. Unmounting closes it, so the other device's camera goes off
+ * with the blade.
+ */
+const RemoteCameraView = memo(function RemoteCameraView({ blade }: { blade: Blade }) {
+  const img = useRef<HTMLImageElement>(null)
+  const [state, state_] = useState<{ label: string; host: boolean; until?: number }>({
+    label: blade.sourceLabel ?? 'another device',
+    host: blade.source === 'host',
+  })
+  const [ended, ended_] = useState<string | null>(null)
+  const [live, live_] = useState(false)
+  const [, tick] = useState(0)
+
+  const watch = useCallback(() => {
+    ended_(null)
+    sendCam({ op: 'watch', id: blade.id })
+  }, [blade.id])
+
+  useEffect(() => {
+    let alive = true
+    let endedNow = false
+    const off = subscribeCam(blade.id, (m) => {
+      if (m.op === 'ready') {
+        if (!endedNow) sendCam({ op: 'watch', id: blade.id })
+      } else if (m.op === 'state') {
+        endedNow = false
+        state_({ label: m.label ?? blade.sourceLabel ?? 'another device', host: Boolean(m.host), until: m.until })
+      } else if (m.op === 'ended') {
+        endedNow = true
+        live_(false)
+        ended_(m.reason ?? 'The camera was turned off.')
+      } else if (m.op === 'frame' && m.data && img.current) {
+        const el = img.current
+        el.src = `data:image/jpeg;base64,${m.data}`
+        void el
+          .decode()
+          .catch(() => {})
+          .then(() => {
+            if (!alive) return
+            live_(true)
+            sendCam({ op: 'ack', id: blade.id })
+          })
+      }
+    })
+    sendCam({ op: 'watch', id: blade.id })
+    // The minutes left on the bridge's own capture, kept current.
+    const t = setInterval(() => tick((n) => n + 1), 30_000)
+    return () => {
+      alive = false
+      clearInterval(t)
+      off()
+      sendCam({ op: 'close', id: blade.id })
+    }
+  }, [blade.id, blade.sourceLabel])
+
+  const left = state.host ? minutesLeft(state.until, Date.now()) : null
+  return (
+    <div className="bl-camremote">
+      <div className="bl-camremote-bar">
+        <span className="bl-camremote-dot" data-live={live && !ended ? '' : undefined} />
+        <span className="bl-camremote-label">{state.label}</span>
+        {left !== null && !ended && <span className="bl-camremote-left">off in {left} min</span>}
+      </div>
+      <img ref={img} className="bl-camremote-img" alt={`Camera: ${state.label}`} hidden={Boolean(ended)} />
+      {ended && (
+        <div className="bl-camremote-ended">
+          <p className="bl-note">{ended}</p>
+          <button type="button" className="bl-camremote-retry" onClick={watch}>
+            TRY AGAIN
+          </button>
+        </div>
+      )}
+      {!live && !ended && <p className="bl-note bl-camremote-wait">Connecting to the camera…</p>}
+    </div>
+  )
 })
 
 /**
@@ -522,7 +607,7 @@ const LiveView = memo(function LiveView({ blade }: { blade: Blade }) {
 })
 
 const Body = memo(function Body({ blade }: { blade: Blade }) {
-  if (blade.kind === 'camera') return <CameraView />
+  if (blade.kind === 'camera') return blade.source ? <RemoteCameraView blade={blade} /> : <CameraView />
   if (blade.kind === 'browser' && blade.url) return <LiveView blade={blade} />
   if (blade.kind === 'screen') return <ScreenView blade={blade} />
 
