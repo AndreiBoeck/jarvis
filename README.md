@@ -227,7 +227,9 @@ On the machine the bridge runs on, JARVIS has buttons:
   playlist, pick the device, queue (see [Spotify](#spotify)).
 
 *"Pause the music"*, *"what's this song?"*, *"volume to thirty"*, *"play Daft
-Punk on my phone"* — just say it. *"Open the player"* puts a built-in player on
+Punk on my phone"* — just say it. If nothing happens, `npm run media:probe` on the PC shows
+what the bridge sees (sessions, what is playing, the volume) without pressing
+anything. *"Open the player"* puts a built-in player on
 the blades; *"open the Spotify screen"* one that searches and plays.
 
 **Saved screens can press those buttons too.** An app screen declares, when it

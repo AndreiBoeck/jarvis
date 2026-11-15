@@ -21,6 +21,7 @@
     "pair": "node scripts/pair.mjs",
     "pair:mac": "node scripts/pair.mjs --mac",
     "spotify:login": "node scripts/spotify-login.mjs",
+    "media:probe": "node scripts/media-probe.mjs",
     "desktop:build": "node desktop/build.mjs",
     "desktop:dev": "electron . --dev --writes",
     "start:browser": "node scripts/start.mjs --browser"
